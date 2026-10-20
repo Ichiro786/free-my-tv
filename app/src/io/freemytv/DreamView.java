@@ -149,6 +149,7 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
         scene.applyPalette();
         content.setUseCompositingLayer(true, null);
         try {
+            if (android.os.Build.VERSION.SDK_INT < 33) throw new UnsupportedOperationException("AGSL needs Android 13");
             glassShader = new RuntimeShader(Shaders.GLASS_TEXT);
             glassPaint.setShader(glassShader);
         } catch (RuntimeException | LinkageError e) {   // Android 12: no AGSL

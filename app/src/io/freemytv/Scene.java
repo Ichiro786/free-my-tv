@@ -41,6 +41,7 @@ final class Scene {
 
     Scene() {
         try {
+            if (android.os.Build.VERSION.SDK_INT < 33) throw new UnsupportedOperationException("AGSL needs Android 13");
             aurora = new RuntimeShader(Shaders.AURORA);
             glass = new RuntimeShader(Shaders.GLASS);
             liquid = new RuntimeShader(Shaders.LIQUID);
