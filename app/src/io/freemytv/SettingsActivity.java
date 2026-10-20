@@ -895,7 +895,7 @@ public class SettingsActivity extends Activity {
             Context c = getContext();
             if (screen == HOME_CHOICE) {
                 boolean wantFree = focus == 0;
-                if (wantFree != freeActive() && !busy()) {
+                if ((wantFree || wantFree != freeActive()) && !busy()) {
                     HomeMode.request(c, wantFree ? HomeMode.FREE : HomeMode.ORIGINAL);
                     pendingAt = SystemClock.uptimeMillis();
                 }
