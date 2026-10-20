@@ -176,10 +176,12 @@ final class HomeMode {
             // Turning off an app makes Android delete the Wi-Fi networks it saved (#14), and Original can't bring them
             // back. The TV's first setup usually saved the network: then stop here, before anything changes.
             Set<String> owners = wifiOwners(adb);
-            // Instead of stopping, keep those apps on (the loop below skips Wi-Fi owners): the networks stay, and the
-            // Home button still comes here through set-home-activity.
-            if (owners.contains(GOOGLE_SETUP) || owners.contains(packageOf(home))) {
-                AppLog.w("wifi saved by " + owners + ": leaving those apps on");
+            String homePkg0 = packageOf(home);
+            if (owners.contains(GOOGLE_SETUP) || owners.contains(homePkg0)) {
+                Set<String> blockers = new HashSet<>();
+                blockers.add(GOOGLE_SETUP);
+                if (homePkg0 != null) blockers.add(homePkg0);
+                owners = clearSetupWifi(c, adb, blockers);
             }
             if (metrics(latest, ORIGINAL) == null && !home.isEmpty()) {
                 busy(c, Ui.tr("Medindo o Início original…", "Measuring the original home screen…"));
@@ -420,6 +422,73 @@ final class HomeMode {
         Matcher m = Pattern.compile("cname=([\\w.]+)").matcher(adb.shell("dumpsys wifi | grep -o 'cname=[^ ]*'"));
         while (m.find()) owners.add(m.group(1));
         return owners;
+    }
+
+    /**
+     * Wi-Fi networks saved by the setup app (or the stock home) block the switch: turning that app off makes Android
+     * erase them. Networks the TV isn't connected to are removed here, after the person agrees: the first press
+     * lists them, a second press within 10 minutes removes them. The network in use must be forgotten and joined
+     * again in Settings, so it's then saved by Settings. Returns the Wi-Fi owners left afterwards.
+     */
+    private static Set<String> clearSetupWifi(Context c, Adb adb, Set<String> blockers) throws IOException, JSONException {
+        String dump = adb.shell("dumpsys wifi");
+        Matcher cur = Pattern.compile("mWifiInfo[^\\n]*?Net ID: (-?\\d+)").matcher(dump);
+        int current = cur.find() ? Integer.parseInt(cur.group(1)) : -1;
+        // Each saved network prints as "ID: n SSID: "name" ... cname=package".
+        Matcher id = Pattern.compile("ID: (\\d+) SSID: \"([^\"]*)\"").matcher(dump);
+        List<int[]> starts = new ArrayList<>();
+        List<String> names = new ArrayList<>();
+        while (id.find()) { starts.add(new int[]{id.start(), Integer.parseInt(id.group(1))}); names.add(id.group(2)); }
+        java.util.Map<Integer, String> setupNets = new java.util.TreeMap<>();
+        boolean currentIsSetup = false;
+        for (int i = 0; i < starts.size(); i++) {
+            int from = starts.get(i)[0], to = i + 1 < starts.size() ? starts.get(i + 1)[0] : dump.length();
+            Matcher cn = Pattern.compile("cname=([\\w.]+)").matcher(dump.substring(from, to));
+            if (!cn.find() || !blockers.contains(cn.group(1))) continue;
+            int net = starts.get(i)[1];
+            if (net == current) currentIsSetup = true; else setupNets.put(net, names.get(i));
+        }
+        AppLog.w("setup wifi: current=" + current + (currentIsSetup ? " (setup)" : "") + " others=" + setupNets);
+        if (currentIsSetup) {
+            throw new IOException(Ui.tr("a rede Wi-Fi em uso foi salva pela configuração inicial. Em Configurações → Rede e "
+                    + "Internet, esqueça essa rede, conecte de novo e tente outra vez.",
+                    "the Wi-Fi you're using was saved by the TV's first setup. In Settings → Network & Internet, forget "
+                    + "that network, connect again, then try once more.",
+                    "la red Wi-Fi en uso la guardó la configuración inicial. En Ajustes → Red e Internet, olvídala, "
+                    + "conéctate de nuevo y vuelve a intentarlo."));
+        }
+        if (setupNets.isEmpty()) {
+            throw new IOException(Ui.tr("a configuração inicial salvou redes Wi-Fi que não consegui identificar.",
+                    "the TV's first setup saved Wi-Fi networks I couldn't identify.",
+                    "la configuración inicial guardó redes Wi-Fi que no pude identificar."));
+        }
+        String list = "\"" + String.join("\", \"", setupNets.values()) + "\"";
+        JSONObject s = state(c);
+        long asked = s.optLong("wifiCleanupAsked", 0);
+        if (System.currentTimeMillis() - asked > 10 * 60_000) {
+            s.put("wifiCleanupAsked", System.currentTimeMillis());
+            save(c, s);
+            throw new IOException(Ui.tr("a configuração inicial salvou estas redes fora de alcance: " + list
+                    + ". Desligá-la as apagaria de qualquer jeito. Escolha Free My TV de novo para removê-las e continuar.",
+                    "the TV's first setup saved these out-of-range networks: " + list
+                    + ". Turning it off would erase them anyway. Choose Free My TV again to remove them and continue.",
+                    "la configuración inicial guardó estas redes fuera de alcance: " + list
+                    + ". Desactivarla las borraría igual. Elige Free My TV otra vez para quitarlas y continuar."));
+        }
+        s.remove("wifiCleanupAsked");
+        save(c, s);
+        for (int net : setupNets.keySet()) {
+            String out = adb.shell("cmd wifi forget-network " + net);
+            AppLog.w("forget wifi " + net + ": " + out.trim());
+        }
+        Set<String> left = wifiOwners(adb);
+        for (String b : blockers) {
+            if (left.contains(b)) throw new IOException(Ui.tr("não consegui remover as redes salvas pela configuração inicial.",
+                    "I couldn't remove the networks saved by the TV's first setup.",
+                    "no pude quitar las redes guardadas por la configuración inicial."));
+        }
+        notice(c, Ui.tr("Redes removidas: ", "Removed networks: ", "Redes quitadas: ") + list + ".");
+        return left;
     }
 
     /** The recorded home screen of the TV, as {@link #realHome}. */
