@@ -311,7 +311,10 @@ public class SettingsActivity extends Activity {
         }
 
         private boolean busy() {
-            return !state.optString("busy").isEmpty() || (pendingAt != 0 && SystemClock.uptimeMillis() - pendingAt < 10_000);
+            // A switch cut off midway (the app updated or killed) leaves "busy" behind: after 3 minutes, it's stale.
+            boolean running = !state.optString("busy").isEmpty()
+                    && System.currentTimeMillis() - state.optLong("busyAt", 0) < 180_000;
+            return running || (pendingAt != 0 && SystemClock.uptimeMillis() - pendingAt < 10_000);
         }
 
         private boolean freeActive() {
