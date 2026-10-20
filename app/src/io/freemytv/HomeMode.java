@@ -176,16 +176,10 @@ final class HomeMode {
             // Turning off an app makes Android delete the Wi-Fi networks it saved (#14), and Original can't bring them
             // back. The TV's first setup usually saved the network: then stop here, before anything changes.
             Set<String> owners = wifiOwners(adb);
+            // Instead of stopping, keep those apps on (the loop below skips Wi-Fi owners): the networks stay, and the
+            // Home button still comes here through set-home-activity.
             if (owners.contains(GOOGLE_SETUP) || owners.contains(packageOf(home))) {
-                throw new IOException(Ui.tr("a configuração inicial da TV salvou o Wi-Fi, e desligá-la apagaria essas redes. "
-                        + "Em Configurações → Rede e Internet, esqueça a rede e conecte de novo (as fora de alcance não aparecem "
-                        + "lá: o Claude Code apaga pelo computador) e tente outra vez.",
-                        "the TV's first setup saved the Wi-Fi, and turning it off would erase those networks. "
-                        + "In Settings → Network & Internet, forget the network and connect again (networks out of range don't "
-                        + "show there: Claude Code can remove them from your computer), then try once more.",
-                        "la configuración inicial del TV guardó el Wi-Fi, y desactivarla borraría esas redes. "
-                        + "En Ajustes → Red e Internet, olvida la red y vuelve a conectarte (las fuera de alcance no aparecen "
-                        + "ahí: Claude Code las borra desde la computadora) y vuelve a intentarlo."));
+                AppLog.w("wifi saved by " + owners + ": leaving those apps on");
             }
             if (metrics(latest, ORIGINAL) == null && !home.isEmpty()) {
                 busy(c, Ui.tr("Medindo o Início original…", "Measuring the original home screen…"));
