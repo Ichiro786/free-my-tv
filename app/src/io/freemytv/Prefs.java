@@ -130,8 +130,8 @@ final class Prefs {
 
     // MARK: - Shelf look (Home Settings): card size, corner radius, focus effect
 
-    static final int[] TILE_SIZES = {80, 90, 100, 110, 120, 130, 140};
-    static int tileSize() { return sp().getInt("tileSize", 100); }
+    static final int[] TILE_SIZES = {70, 75, 80, 85, 90, 95, 100};   // percent of the largest card the shelf fits
+    static int tileSize() { return Math.max(70, Math.min(100, sp().getInt("tileSize", 100))); }
     static void setTileSize(int pct) { sp().edit().putInt("tileSize", pct).apply(); }
     static final int[] TILE_RADII = {0, 4, 8, 12, 16, 20, 22, 26, 30, 36, 44, 56};
     static int tileRadius() { return sp().getInt("tileRadius", 22); }
