@@ -62,7 +62,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     // Shelf: tiles with corners concentric with the glass (glass radius = tile radius + padding).
     // Shelf like the tvOS 27 Dock: 5:3 icons (210 × 126) in each brand's color, 48 apart, and the glass bar hugging
     // them with 40 of padding (the focused icon grows 20% without touching its edge).
-    private static final float SHELF_PAD = 40, TILE_GAP = 48;
+    private static final float SHELF_PAD = 40, TILE_GAP = 48, SHELF_BOTTOM = 1050;
     private static final float TILE_RADIUS = 22, TILE_MAX_W = 240;   // 16:9 cards: TV banners and custom pictures fit whole
     // Tile focus (Apple TV style): it grows from the center and its shadow drops (it "rises" toward the viewer).
     private static final float FOCUS_GROW = 0.2f;
@@ -460,8 +460,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         measure(status, Math.round(1160 * kk), Math.round(240 * kk));
         // Sized to what they draw (the glass and its shadow; the grown tiles and their shadows): smaller layers are
         // cheaper for the GPU to composite on every frame of the drawer animation.
-        measure(platter, width, Math.round(320 * kk));
-        measure(tiles, width, Math.round(270 * kk));
+        measure(platter, width, Math.round(350 * kk));   // 730..1080: room for cards up to 140%
+        measure(tiles, width, Math.round(320 * kk));     // 760..1080
         measure(drawerLayer, width, Math.round(600 * kk));
         measure(sheetLayer, width, height);
         measure(toastLayer, Math.round(1000 * kk), Math.round(220 * kk));
@@ -478,8 +478,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         sky.layout(0, 0, width, height);
         place(heroLayer, 0, 0);
         place(status, width - status.getMeasuredWidth(), 0);
-        place(platter, 0, Math.round(750 * kk));
-        place(tiles, 0, Math.round(790 * kk));
+        place(platter, 0, Math.round(730 * kk));
+        place(tiles, 0, Math.round(760 * kk));
         place(drawerLayer, 0, Math.round(470 * kk));
         sheetLayer.layout(0, 0, width, height);
         sheetLayer.setPivotX(width / 2f);
@@ -1039,25 +1039,48 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         platter.invalidate();
     }
 
+    private float shelfScroll, lastTileW;
+    private boolean shelfOverflows;
+
     private void layoutShelf() {
         readShelfLook();
         int n = shelf.size();
-        float pad = shelfPad * k, gap = TILE_GAP * k;
-        // The glass bar keeps its bottom edge; bigger cards grow upward, never into the recommendation captions.
-        float bottom = (L_PLATTER_TOP + L_TILE_H + 2 * SHELF_PAD) * k, ceiling = 784 * k;
-        float th = Math.min(L_TILE_H * tileScale * k, bottom - ceiling - 2 * pad - (outlineFocus ? 0 : L_TILE_H * FOCUS_GROW * k / 2));
+        float pad = shelfPad * k;
+        // Bigger cards sit closer together (48 px at 100%, down to 24 px at 140%).
+        float gap = Math.max(24, Math.min(TILE_GAP, TILE_GAP - (tileScale - 1) * 60)) * k;
+        // The glass bar keeps its bottom edge near the screen's; bigger cards grow upward (at most to y≈780, under the
+        // recommendation captions). Always 16:9, so a banner is never squashed or cropped.
+        float bottom = SHELF_BOTTOM * k;
+        float th = Math.min(L_TILE_H * tileScale, SHELF_BOTTOM - 780 - 2 * shelfPad - (outlineFocus ? 0 : L_TILE_H * tileScale * FOCUS_GROW / 2)) * k;
+        float tw = th * 16f / 9f;
         float full = (CONTENT_R - MARGIN) * k;
-        float tw = Math.min(th * 16f / 9f, (full - Math.max(0, n - 1) * gap) / Math.max(1, n));
-        th = tw * 9f / 16f;   // 16:9 so a banner is never squashed or cropped
-        float width = n * tw + Math.max(0, n - 1) * gap, left = (w - width) / 2f;
-        float top = bottom - th - 2 * pad;
-        platterRect.set(left - pad, top, left + width + pad, top + th + 2 * pad);
-        float x = left, y = top + pad;
+        float width = n * tw + Math.max(0, n - 1) * gap;
+        shelfOverflows = width > full;
+        float left;
+        if (!shelfOverflows) {
+            shelfScroll = 0;
+            left = (w - width) / 2f;
+            platterRect.set(left - pad, bottom - th - 2 * pad, left + width + pad, bottom);
+        } else {
+            // More cards than fit: the bar spans the screen and the row slides to keep the focused card in view.
+            int at = Math.max(0, Math.min(shelfIndex, n - 1));
+            float focusL = at * (tw + gap) - shelfScroll, focusR = focusL + tw;
+            float edge = (outlineFocus ? 12 : tw * FOCUS_GROW / 2 + 8) * k;
+            if (focusL < edge) shelfScroll -= edge - focusL;
+            else if (focusR > full - edge) shelfScroll += focusR - (full - edge);
+            shelfScroll = Math.max(0, Math.min(width - full, shelfScroll));
+            left = MARGIN * k - shelfScroll;
+            platterRect.set(MARGIN * k - pad, bottom - th - 2 * pad, CONTENT_R * k + pad, bottom);
+        }
+        float x = left, y = bottom - pad - th;
         for (int i = 0; i < n; i++) {
             tileRects[i].set(x, y, x + tw, y + th);
             x += tw + gap;
         }
-        crispLogos.clear();
+        if (Math.abs(tw - lastTileW) > 0.5f) {
+            crispLogos.clear();
+            lastTileW = tw;
+        }
     }
 
     /** Shelf layer: the glass bar and its shadow (it only changes with the background). */
@@ -1121,12 +1144,17 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 top = i;
             }
         }
+        if (shelfOverflows) {
+            c.save();
+            c.clipRect(platterRect.left + 6 * k, platterRect.top - 60 * k, platterRect.right - 6 * k, platterRect.bottom + 40 * k);
+        }
         for (int pass = 0; pass < 2; pass++) {
             for (int i = 0; i < shelf.size(); i++) {
                 if ((pass == 0) == (i == top)) continue;
                 drawShelfTile(c, i);
             }
         }
+        if (shelfOverflows) c.restore();
     }
 
     /**
@@ -1480,6 +1508,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     /** Sets the springs' targets from the current focus (snap: no animation). */
     private void retarget(boolean snap) {
         // Only the group whose focus changed is redrawn (moving along the shelf doesn't redraw the hero or capsule).
+        if (shelfOverflows && zone == Z_SHELF) layoutShelf();   // keeps the focused card in view
         boolean tilesChanged = aim(tileFocus, !sheetOpen && zone == Z_SHELF ? shelfIndex : -1, snap);
         boolean statusChanged = aim(statusFocus, !sheetOpen && zone == Z_STATUS ? statusIndex : -1, snap);
         boolean drawerChanged = aim(drawerFocus, !sheetOpen && zone == Z_DRAWER ? drawerIndex : -1, snap);
