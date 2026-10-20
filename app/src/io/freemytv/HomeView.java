@@ -134,6 +134,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private int wideIndex;
     private Trailer trailer;
     private String failedTrailer;
+    private final java.util.Set<String> noTrailerLogged = new java.util.HashSet<>();
     private final Runnable startTrailer = this::startTrailer;
     private final Runnable followWide = this::followWideBackdrop;
 
@@ -178,10 +179,13 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     /** Reads the shelf look; true when it changed (the shelf then needs a new layout). */
     private boolean readShelfLook() {
         float scale = Prefs.tileSize() / 100f, radius = Prefs.tileRadius();
-        boolean outline = !"grow".equals(Prefs.focusStyle());
+        String style = Prefs.focusStyle();
+        boolean outline = !"grow".equals(style) && !"growshimmer".equals(style);
+        boolean shimmer = "growshimmer".equals(style);
         int dock = Prefs.dockSize(), growPct = Prefs.growAmount();
         boolean changed = scale != tileScale || radius != tileRadius || outline != outlineFocus || dock != dockPct
-                || growPct != growSetting;
+                || growPct != growSetting || shimmer != shimmerFocus;
+        shimmerFocus = shimmer;
         tileScale = scale;
         tileRadius = radius;
         outlineFocus = outline;
@@ -192,6 +196,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     }
 
     private int dockPct = 0, growSetting = 0;   // 0 = automatic
+    private boolean shimmerFocus;               // Grow + liquid shimmer: the focused card's rim glows, live
     private float growNow = 0.12f;              // the focus growth layoutShelf() worked out
 
     private float grow() {
@@ -245,6 +250,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     // Frames
     private boolean running, tilesDirty, statusDirty, heroDirty, drawerDirty, gridDirty, motionDirty = true;
     private boolean drawerWasMoving, scrollWasMoving;
+    private int shimmerFrame;
     private long lastNanos, resumedAt, lastStep;
     private int w, h;
     private float k = 1;
@@ -639,6 +645,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         // drop frames (measured: ~50 ms of GPU per frame). The app tiles have no glass; the top buttons fade out as
         // they rise; the drawer is drawn resting in place; the glass shelf is redrawn once the drawer stops, so the
         // glass shows the background where it ended up.
+        // The liquid shimmer is alive: the focused card's layer redraws every frame (every other frame on Android
+        // before 13, where the weaker GPUs are) while the shelf has the focus and nothing covers it.
+        boolean shimmering = shimmerFocus && zone == Z_SHELF && !sheetOpen && drawer.value < 0.01f && !shelf.isEmpty();
+        if (shimmering && (android.os.Build.VERSION.SDK_INT >= 33 || (shimmerFrame++ & 1) == 0)) tilesDirty = true;
         if (tilesMoving || tilesDirty) tiles.invalidate();
         if (statusMoving || statusDirty || bgFading) status.invalidate();
         if (heroMoving || heroDirty || heroFading) heroLayer.invalidate();
@@ -1297,6 +1307,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             c.restore();
         }
         if (outlineFocus && fc > 0.01f) drawOutline(c, cell, r, fc);
+        if (shimmerFocus && fc > 0.01f) Shimmer.draw(c, cell, r, fc, k, (SystemClock.uptimeMillis() - resumedAt) / 1000f);
     }
 
     /**
@@ -2153,6 +2164,21 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         gridDirty = true;
     }
 
+    /** For You's titles open on their own page in Nuvio when it's installed and chosen (Home Settings). */
+    private boolean openInNuvio(Recs.Pick p) {
+        android.content.Intent i = Recs.nuvioIntent(getContext(), p);
+        if (i == null) return false;
+        click.open();
+        try {
+            activity.startActivity(i);
+            AppLog.w("for you -> nuvio: " + i.getData());
+            return true;
+        } catch (RuntimeException e) {
+            AppLog.w("nuvio didn't open: " + e);
+            return false;
+        }
+    }
+
     private void activate() {
         HomeApps.Item it;
         RectF r;
@@ -2162,7 +2188,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             r = focusedCell;
         } else if (zone == Z_HERO) {
             Recs.Pick p = currentPick();
-            if (p == null || p.pkg == null) return;
+            if (p == null) return;
+            if (openInNuvio(p)) return;
+            if (p.pkg == null) return;
             it = HomeApps.app(p.pkg, Recs.serviceName(p));
             r = heroButton;
         } else if (zone == Z_STATUS) {
@@ -2187,7 +2215,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             r = topRects[topIndex];
         } else if (zone == Z_CARDS) {
             Recs.Pick p = cardIndex < cards.size() ? cards.get(cardIndex) : null;
-            if (p == null || p.pkg == null) return;
+            if (p == null) return;
+            if (openInNuvio(p)) return;
+            if (p.pkg == null) return;
             it = HomeApps.app(p.pkg, Recs.serviceName(p));
             r = cardRects[cardIndex];
         } else {
@@ -2457,6 +2487,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         Recs.Pick p = wideIndex < cards.size() ? cards.get(wideIndex) : null;
         boolean want = running && !sheetOpen && !drawerOpen && zone == Z_CARDS && cardIndex == wideIndex && p != null
                 && p.trailer != null && !p.trailer.equals(failedTrailer) && !"off".equals(Prefs.trailers());
+        if (zone == Z_CARDS && p != null && p.trailer == null && noTrailerLogged.add(p.title)) {
+            AppLog.w("trailer: TMDB has none for \u201c" + p.title + "\u201d");
+        }
         if (want && p.trailer.equals(trailer.key())) return;   // already playing this one
         handler.removeCallbacks(startTrailer);
         if (trailer.active()) trailer.stop();
@@ -2686,7 +2719,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 if (dy >= 0 || shelf.isEmpty()) return false;
                 if (cards.isEmpty()) {
                     zone = Z_TOP;
-                    topIndex = tab;
+                    topIndex = 3;
                 } else {
                     zone = Z_CARDS;
                     cardIndex = nearest(cardRects, cards.size(), tileRects[shelfIndex].centerX());
@@ -2698,8 +2731,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                     if (next == cardIndex) return true;
                     cardIndex = next;
                 } else if (dy < 0) {
+                    // Up goes straight to the round buttons (Live TV, HDMI Inputs, Settings), the closest one; the
+                    // tabs are one press to the left of them.
                     zone = Z_TOP;
-                    topIndex = tab;     // as on Apple TV: moving up to the tabs focuses the selected tab
+                    topIndex = 3 + nearestButton(cardRects[cardIndex].centerX());
                 } else {
                     zone = Z_SHELF;
                     if (!shelf.isEmpty()) shelfIndex = nearest(tileRects, tileRects.length, cardRects[cardIndex].centerX());
@@ -2728,6 +2763,13 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         retarget(false);
         click.move();
         return true;
+    }
+
+    /** The round top button (0 = Live TV, 1 = HDMI Inputs, 2 = Settings) closest to `x`. */
+    private int nearestButton(float x) {
+        int best = 0;
+        for (int i = 1; i < 3; i++) if (Math.abs(topRects[3 + i].centerX() - x) < Math.abs(topRects[3 + best].centerX() - x)) best = i;
+        return best;
     }
 
     private static int nearest(RectF[] rects, int count, float x) {

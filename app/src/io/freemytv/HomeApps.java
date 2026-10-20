@@ -206,9 +206,15 @@ final class HomeApps {
     }
 
     /** Live TV, the HDMI inputs with a device sending a signal, and All Apps. */
+    /** Live TV opens the built-in IPTV player: chosen in Home Settings, or automatically when there's no TV tuner. */
+    static boolean iptvLive(Context c) {
+        String m = Prefs.liveTv();
+        return m.equals("iptv") || (m.equals("auto") && liveTv(c) == null);
+    }
+
     static List<Item> shortcuts(Context c) {
         List<Item> items = new ArrayList<>();
-        if (liveTv(c) != null) {
+        if (iptvLive(c) || liveTv(c) != null) {
             items.add(shortcut(LIVE_TV, "live", Ui.tr("TV ao Vivo", "Live TV"), "tv"));
         }
         items.addAll(inputs(c));
@@ -257,7 +263,7 @@ final class HomeApps {
     /** For the bottom drawer: live TV and every HDMI input (the ones with no device are shown dimmed). */
     static List<Item> allInputs(Context c) {
         List<Item> items = new ArrayList<>();
-        if (liveTv(c) != null) items.add(shortcut(LIVE_TV, "live", Ui.tr("TV ao Vivo", "Live TV"), "tv"));
+        if (iptvLive(c) || liveTv(c) != null) items.add(shortcut(LIVE_TV, "live", Ui.tr("TV ao Vivo", "Live TV"), "tv"));
         items.addAll(inputs(c, true));
         return items;
     }
@@ -406,7 +412,7 @@ final class HomeApps {
                 if (intent != null) intent.addFlags(Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
                 break;
             case LIVE_TV:
-                intent = liveTv(a);
+                intent = iptvLive(a) ? new Intent().setComponent(new ComponentName(a, IptvActivity.class)) : liveTv(a);
                 break;
             case INPUT:
                 intent = new Intent(Intent.ACTION_VIEW, TvContract.buildChannelUriForPassthroughInput(it.inputId));

@@ -239,11 +239,18 @@ public class SettingsActivity extends Activity {
             }
         }
 
-        /** Home Settings rows shrink a little when there are many, so the whole list stays on screen. */
-        private float rowH() {
-            if (screen != HOME_SETTINGS) return LIST_ROW_H;
-            int n = Math.max(1, settingLabels().length);
-            return Math.min(SET_ROW_H, (1010 - LIST_TOP - 20) / n - SET_ROW_GAP);
+        private float rowH() { return screen == HOME_SETTINGS ? SET_ROW_H : LIST_ROW_H; }
+
+        /** Home Settings scrolls: this many rows fit, and setScroll is the first one shown. */
+        private static final int SET_VISIBLE = 13;
+        private int setScroll;
+
+        private void keepSettingVisible() {
+            if (screen != HOME_SETTINGS) return;
+            int n = settingLabels().length;
+            if (focus < setScroll + 1) setScroll = focus - 1;
+            if (focus > setScroll + SET_VISIBLE - 2) setScroll = focus - SET_VISIBLE + 2;
+            setScroll = Math.max(0, Math.min(Math.max(0, n - SET_VISIBLE), setScroll));
         }
         private float rowGap() { return screen == HOME_SETTINGS ? SET_ROW_GAP : LIST_ROW_GAP; }
 
@@ -256,7 +263,7 @@ public class SettingsActivity extends Activity {
                 top = LIST_TOP + 20 + row * (CHOICE_H + ROW_GAP);
                 height = CHOICE_H;
             } else {
-                top = LIST_TOP + 20 + row * (rowH() + rowGap());
+                top = LIST_TOP + 20 + (row - (screen == HOME_SETTINGS ? setScroll : 0)) * (rowH() + rowGap());
                 height = rowH();
             }
             focusBox.set(LIST_X * k, top * k, LIST_R * k, (top + height) * k);
@@ -566,12 +573,14 @@ public class SettingsActivity extends Activity {
                 case KeyEvent.KEYCODE_DPAD_UP:
                     if (down && focus > 0) focus--;
                     else if (down && scrolling() && pickScroll > 0) pickScroll--;
+                    keepSettingVisible();
                     invalidate();
                     spoken.focusMoved();
                     return true;
                 case KeyEvent.KEYCODE_DPAD_DOWN:
                     if (down && focus < rowCount() - 1) focus++;
                     else if (down && scrolling() && pickScroll + rowCount() < listSize()) pickScroll++;
+                    keepSettingVisible();
                     invalidate();
                     spoken.focusMoved();
                     return true;
@@ -637,14 +646,17 @@ public class SettingsActivity extends Activity {
 
         // Home Settings rows by id (the list is built each time: "Grow amount" only shows with the Grow focus).
         private static final int R_LANGUAGE = 0, R_TEMP = 1, R_THEME = 2, R_WEATHER = 3, R_QUOTES = 4, R_TMDB = 5,
-                R_DOCK = 6, R_ICON = 7, R_RADIUS = 8, R_FOCUS = 9, R_GROW = 10, R_OPENING = 11, R_TRAILERS = 12, R_COIN = 100;
+                R_DOCK = 6, R_ICON = 7, R_RADIUS = 8, R_FOCUS = 9, R_GROW = 10, R_OPENING = 11, R_TRAILERS = 12, R_LIVE = 13, R_FORYOU = 14, R_HOMEHOLD = 15, R_COIN = 100;
 
         private List<Integer> settingRows() {
             List<Integer> r = new ArrayList<>();
             for (int id : new int[] {R_LANGUAGE, R_TEMP, R_THEME, R_WEATHER, R_QUOTES, R_TMDB, R_DOCK, R_ICON, R_RADIUS, R_FOCUS}) r.add(id);
-            if ("grow".equals(Prefs.focusStyle())) r.add(R_GROW);
+            if (!"outline".equals(Prefs.focusStyle())) r.add(R_GROW);
             r.add(R_OPENING);
             r.add(R_TRAILERS);
+            r.add(R_FORYOU);
+            r.add(R_LIVE);
+            r.add(R_HOMEHOLD);
             int coins = dollar() ? 4 : 3;
             for (int i = 0; i < coins; i++) r.add(R_COIN + i);
             return r;
@@ -674,6 +686,9 @@ public class SettingsActivity extends Activity {
                     case R_GROW: l[i] = Ui.tr("   Quanto aumentar", "   Grow amount"); break;
                     case R_OPENING: l[i] = Ui.tr("Abrir apps", "App opening"); break;
                     case R_TRAILERS: l[i] = Ui.tr("Trailers no Para você", "Trailers on For You"); break;
+                    case R_FORYOU: l[i] = Ui.tr("Abrir títulos do Para você em", "Open For You titles in"); break;
+                    case R_LIVE: l[i] = Ui.tr("TV ao vivo", "Live TV"); break;
+                    case R_HOMEHOLD: l[i] = Ui.tr("Segurar Início: ajustes", "Hold Home for settings"); break;
                     default: {
                         int c = id - R_COIN;
                         l[i] = c == 0 ? "Bitcoin" : c == 1 ? "Ethereum" : c == 2 ? "Solana" : Ui.tr("Dólar", "Dollar");
@@ -714,13 +729,27 @@ public class SettingsActivity extends Activity {
                     case R_DOCK: v[i] = Prefs.dockSize() == 0 ? Ui.tr("Automático", "Auto") : Prefs.dockSize() + "%"; break;
                     case R_ICON: v[i] = Prefs.tileSize() + "%"; break;
                     case R_RADIUS: v[i] = Prefs.tileRadius() == 0 ? Ui.tr("Retos", "Square") : Prefs.tileRadius() + " px"; break;
-                    case R_FOCUS: v[i] = "grow".equals(Prefs.focusStyle()) ? Ui.tr("Aumentar", "Grow") : Ui.tr("Contorno brilhante", "Shimmer outline"); break;
+                    case R_FOCUS: {
+                        String fs = Prefs.focusStyle();
+                        v[i] = "grow".equals(fs) ? Ui.tr("Aumentar", "Grow") : "growshimmer".equals(fs)
+                                ? Ui.tr("Aumentar + brilho líquido", "Grow + liquid shimmer") : Ui.tr("Contorno brilhante", "Shimmer outline");
+                        break;
+                    }
                     case R_GROW: v[i] = Prefs.growAmount() == 0 ? Ui.tr("Automático", "Auto") : "+" + Prefs.growAmount() + "%"; break;
                     case R_OPENING: {
                         String la = Prefs.launchAnim();
                         v[i] = la.equals("zoom") ? Ui.tr("Zoom do sistema", "System zoom") : la.equals("off") ? Ui.tr("Instantâneo", "Instant") : Ui.tr("Rápido", "Quick fade");
                         break;
                     }
+                    case R_FORYOU: v[i] = "nuvio".equals(Prefs.forYouApp()) ? "Nuvio" : Ui.tr("App de streaming", "Streaming app"); break;
+                    case R_LIVE: {
+                        String m = Prefs.liveTv();
+                        boolean tuner = HomeApps.liveTv(getContext()) != null;
+                        v[i] = m.equals("iptv") ? Ui.tr("IPTV embutido", "Built-in IPTV") : m.equals("tuner") ? Ui.tr("Sintonizador da TV", "TV tuner")
+                                : Ui.tr("Automático", "Auto") + " (" + (tuner ? Ui.tr("sintonizador", "tuner") : "IPTV") + ")";
+                        break;
+                    }
+                    case R_HOMEHOLD: v[i] = onOff(Prefs.homeHold()); break;
                     case R_TRAILERS: {
                         String t = Prefs.trailers();
                         v[i] = t.equals("off") ? Ui.tr("Desligado", "Off") : t.equals("muted") ? Ui.tr("Sem som", "Muted") : Ui.tr("Com som", "With sound");
@@ -806,7 +835,20 @@ public class SettingsActivity extends Activity {
                 case R_DOCK: Prefs.setDockSize(step(Prefs.DOCK_SIZES, Prefs.dockSize(), dir)); break;
                 case R_ICON: Prefs.setTileSize(step(Prefs.TILE_SIZES, Prefs.tileSize(), dir)); break;
                 case R_RADIUS: Prefs.setTileRadius(step(Prefs.TILE_RADII, Prefs.tileRadius(), dir)); break;
-                case R_FOCUS: Prefs.setFocusStyle("grow".equals(Prefs.focusStyle()) ? "outline" : "grow"); break;
+                case R_FOCUS: {
+                    String[] modes = {"outline", "grow", "growshimmer"};
+                    int at = Math.max(0, java.util.Arrays.asList(modes).indexOf(Prefs.focusStyle()));
+                    Prefs.setFocusStyle(modes[(at + dir + modes.length) % modes.length]);
+                    break;
+                }
+                case R_FORYOU: Prefs.setForYouApp("nuvio".equals(Prefs.forYouApp()) ? "service" : "nuvio"); break;
+                case R_LIVE: {
+                    String[] modes = {"auto", "iptv", "tuner"};
+                    int at = Math.max(0, java.util.Arrays.asList(modes).indexOf(Prefs.liveTv()));
+                    Prefs.setLiveTv(modes[(at + dir + modes.length) % modes.length]);
+                    break;
+                }
+                case R_HOMEHOLD: Prefs.setHomeHold(!Prefs.homeHold()); break;
                 case R_GROW: Prefs.setGrowAmount(step(Prefs.GROW_AMOUNTS, Prefs.growAmount(), dir)); break;
                 case R_OPENING: {
                     String[] modes = {"quick", "off", "zoom"};
@@ -1000,8 +1042,9 @@ public class SettingsActivity extends Activity {
             Paint heading = Ui.text(Ui.displaySemibold, 34 * k, 0xFFFFFFFF);
             c.drawText(keys ? Ui.tr("Botões do Controle", "Remote Buttons") : Ui.tr("Ajustes do Início", "Home Settings"),
                     LIST_X * k + 30 * k, (LIST_TOP - 24) * k, heading);
-            for (int i = 0; i < labels.length; i++) {
-                float y = (LIST_TOP + 20 + i * (rowH() + rowGap())) * k;
+            int first = keys ? 0 : setScroll, last = keys ? labels.length : Math.min(labels.length, setScroll + SET_VISIBLE);
+            for (int i = first; i < last; i++) {
+                float y = (LIST_TOP + 20 + (i - first) * (rowH() + rowGap())) * k;
                 rowRect.set(LIST_X * k, y, LIST_R * k, y + rowH() * k);
                 float f = drawRowBackground(c, i);
                 rowLabel.setColor(blend(0xF2FFFFFF, INK, f));
@@ -1013,7 +1056,10 @@ public class SettingsActivity extends Activity {
                 c.drawText(values[i], rowRect.right - 30 * k, base, rowValue);
             }
             Paint hint = Ui.text(Ui.regular, 23 * k, 0x8CFFFFFF);
-            float hy = (LIST_TOP + 20 + labels.length * (rowH() + rowGap()) + 36) * k;
+            float hy = (LIST_TOP + 20 + (last - first) * (rowH() + rowGap()) + 36) * k;
+            if (!keys && last < labels.length) {
+                Symbols.draw(getContext(), c, "chevron_down", (LIST_X + LIST_R) / 2f * k, hy - 30 * k, 26 * k, 0x8CFFFFFF);
+            }
             c.drawText(Ui.tr("OK ou as setas mudam o valor.", "OK or the arrows change the value."), LIST_X * k + 30 * k, hy, hint);
             if (keys) {
                 c.drawText(RemoteKeys.supported() ? Ui.tr("Disney e Globoplay: a própria TV controla esses botões.",
@@ -1058,6 +1104,7 @@ public class SettingsActivity extends Activity {
             } else if (focus == 2) {
                 screen = HOME_SETTINGS;
                 focus = 0;
+                setScroll = 0;
             } else if (focus == 3) {
                 openShelfEditor();
             } else if (focus == 4) {

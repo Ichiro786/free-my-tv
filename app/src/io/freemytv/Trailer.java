@@ -27,7 +27,14 @@ import android.webkit.WebViewClient;
  * user of memory on the TV).
  */
 final class Trailer {
-    private static final String ORIGIN = "https://freemytv.app";
+    // YouTube's rule for apps: the embed's Referer is "https://" + the app's id (an https base URL sets it).
+    private static final String ORIGIN = "https://io.freemytv";
+    private static final long GIVE_UP_MS = 15_000;
+    /**
+     * Nearly invisible rather than invisible: Android skips drawing a view at alpha 0, and Chromium then treats the page
+     * as hidden and won't start the video, so "playing" never came and the trailer never faded in (build 11's bug).
+     */
+    private static final float HIDDEN = 0.004f;
     private static final long FADE_IN_MS = 700, FADE_OUT_MS = 260;
 
     interface Host { void trailerFailed(String key); }
@@ -66,15 +73,29 @@ final class Trailer {
         rect.set(r);
         radius = cornerRadius;
         web.animate().cancel();
-        web.setAlpha(0);
+        web.setAlpha(HIDDEN);
         web.setVisibility(View.VISIBLE);
         layout();
+        AppLog.w("trailer " + videoKey + ": loading");
+        main.removeCallbacks(giveUp);
+        main.postDelayed(giveUp, GIVE_UP_MS);
         web.loadDataWithBaseURL(ORIGIN + "/", page(videoKey, Math.round(r.width()), Math.round(r.height()), muted),
                 "text/html", "utf-8", null);
     }
 
+    private final Runnable giveUp = this::giveUpNow;
+
+    private void giveUpNow() {
+        if (key == null || web == null || web.getAlpha() > 0.5f) return;
+        AppLog.w("trailer " + key + ": no playback after 15 s, giving up");
+        String k = key;
+        stop();
+        host.trailerFailed(k);
+    }
+
     /** Fades out and stops (the WebView stays, blank, for the next one). */
     void stop() {
+        main.removeCallbacks(giveUp);
         if (web == null || key == null) return;
         key = null;
         final WebView v = web;
@@ -89,6 +110,7 @@ final class Trailer {
 
     /** The home screen went away: frees the WebView. */
     void release() {
+        main.removeCallbacks(giveUp);
         key = null;
         if (web == null) return;
         WebView v = web;
@@ -142,8 +164,14 @@ final class Trailer {
                 }
             });
             v.setClipToOutline(true);
-            v.setAlpha(0);
+            v.setAlpha(HIDDEN);
             v.setVisibility(View.INVISIBLE);
+            v.setWebChromeClient(new WebChromeClient() {
+                @Override public boolean onConsoleMessage(android.webkit.ConsoleMessage m) {
+                    if (m.messageLevel() == android.webkit.ConsoleMessage.MessageLevel.ERROR) AppLog.w("trailer js: " + m.message());
+                    return true;
+                }
+            });
             parent.addView(v, Math.min(index, parent.getChildCount()));
             web = v;
             return true;
@@ -159,6 +187,7 @@ final class Trailer {
         return "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>"
                 + "<style>html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000}"
                 + "#p{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);border:0;pointer-events:none}</style>"
+                + "<meta name='referrer' content='strict-origin-when-cross-origin'>"
                 + "</head><body><div id='p'></div><script>"
                 + "var K='" + videoKey.replaceAll("[^A-Za-z0-9_-]", "") + "',M=" + (muted ? 1 : 0) + ",P=null,R=null,started=0;"
                 + "function cover(){var W=innerWidth||" + w + ",H=innerHeight||" + h + ",vw=W,vh=W*9/16;"
@@ -181,6 +210,8 @@ final class Trailer {
         @JavascriptInterface public void playing(final String k) {
             main.post(() -> {
                 if (web == null || !k.equals(key)) return;
+                main.removeCallbacks(giveUp);
+                AppLog.w("trailer " + k + ": playing");
                 // A beat after "playing": the first frame is on screen, so the fade shows motion, not black.
                 web.animate().cancel();
                 web.animate().alpha(1).setStartDelay(250).setDuration(FADE_IN_MS)

@@ -39,4 +39,46 @@ final class RemoteKeys {
         }
         return true;
     }
+
+    // MARK: - Hold Home: Free My TV's settings (Home Settings > Hold Home for settings)
+
+    private static final long HOLD_MS = 650;
+    private static final android.os.Handler MAIN = new android.os.Handler(android.os.Looper.getMainLooper());
+    private static boolean homeDown, homeHeld;
+    private static Runnable holdAction;
+
+    /**
+     * The service sees Home before the system does. A press shorter than 0.65 s is handed back as the normal Home
+     * (performGlobalAction), so Home works exactly as before; held longer, it opens Free My TV's settings instead.
+     */
+    static boolean onHomeKey(final android.accessibilityservice.AccessibilityService s, KeyEvent e) {
+        if (e.getKeyCode() != KeyEvent.KEYCODE_HOME || !Prefs.homeHold()) return false;
+        if (e.getAction() == KeyEvent.ACTION_DOWN) {
+            if (e.getRepeatCount() == 0 && !homeDown) {
+                homeDown = true;
+                homeHeld = false;
+                holdAction = () -> {
+                    if (!homeDown) return;
+                    homeHeld = true;
+                    AppLog.w("home held: opening settings");
+                    Intent i = new Intent(s, SettingsActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+                    try {
+                        s.startActivity(i);
+                    } catch (RuntimeException ex) {
+                        AppLog.w("settings didn't open: " + ex);
+                    }
+                };
+                MAIN.postDelayed(holdAction, HOLD_MS);
+            }
+            return true;
+        }
+        if (e.getAction() == KeyEvent.ACTION_UP) {
+            if (holdAction != null) MAIN.removeCallbacks(holdAction);
+            boolean wasDown = homeDown;
+            homeDown = false;
+            if (wasDown && !homeHeld) s.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME);
+            return true;
+        }
+        return false;
+    }
 }

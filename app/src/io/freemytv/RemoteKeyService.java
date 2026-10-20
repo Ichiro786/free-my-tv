@@ -7,6 +7,7 @@ import android.view.accessibility.AccessibilityEvent;
 /** Sees the remote's keys before any app does, so the app buttons work from inside Netflix, Disney and the rest. */
 public class RemoteKeyService extends AccessibilityService {
     @Override protected boolean onKeyEvent(KeyEvent event) {
+        if (RemoteKeys.onHomeKey(this, event)) return true;
         return RemoteKeys.onKey(this, event);
     }
 

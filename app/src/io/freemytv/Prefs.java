@@ -174,4 +174,14 @@ final class Prefs {
         put("pinned", sb.toString());
         return pin;
     }
+
+    /** Live TV: "auto" (the TV's tuner app if there is one, else the built-in IPTV), "tuner" or "iptv". */
+    static String liveTv() { return sp().getString("liveTv", "auto"); }
+    static void setLiveTv(String v) { sp().edit().putString("liveTv", v).apply(); }
+    /** For You titles open in: "nuvio" (the title's page in Nuvio, when installed) or "service" (Netflix and co). */
+    static String forYouApp() { return sp().getString("forYouApp", "nuvio"); }
+    static void setForYouApp(String v) { put("forYouApp", v); }
+    /** Holding the remote's Home button opens Free My TV's settings. */
+    static boolean homeHold() { return sp().getBoolean("homeHold", true); }
+    static void setHomeHold(boolean v) { sp().edit().putBoolean("homeHold", v).apply(); }
 }

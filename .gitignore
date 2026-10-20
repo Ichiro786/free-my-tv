@@ -9,3 +9,7 @@ out/
 
 # macOS
 .DS_Store
+
+# Libraries (libs/fetch.sh downloads them) and their dex cache
+libs/*.jar
+libs/.dex-*/

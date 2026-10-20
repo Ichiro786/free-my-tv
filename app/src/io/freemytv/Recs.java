@@ -44,6 +44,7 @@ final class Recs {
         int id;
         String kind;            // "movie" or "tv"
         String title, backdrop, meta = "", app, pkg;
+        String imdb;            // IMDb id (tt…), for opening the title in Nuvio
         String trailer;         // YouTube key of the official trailer (or teaser), null if none
         boolean detailed;
     }
@@ -54,7 +55,7 @@ final class Recs {
     private static final String IMAGES = "https://image.tmdb.org/t/p/original";
     private static final long LIST_EVERY = 6 * 3600_000L;
     /** Bump when what is saved for each title changes (the saved list is discarded and fetched again). */
-    private static final int CACHE_VERSION = 4;
+    private static final int CACHE_VERSION = 5;
     private static final int MANHA = 0, TARDE = 1, NOITE = 2;
     static final String[] PERIOD_LABEL = {"PARA ESTA MANHÃ", "PARA ESTA TARDE", "PARA ESTA NOITE"};
     static final String[] PERIOD_LABEL_EN = {"THIS MORNING", "THIS AFTERNOON", "TONIGHT"};
@@ -173,9 +174,10 @@ final class Recs {
         List<Pick> list = new ArrayList<>();
         if (!hasKey(context)) return list;    // no TMDB key: no recommendations
         Map<String, Boolean> have = new HashMap<>();   // one look per app, not per title (this runs every 15 s)
+        boolean anyTitle = nuvio(context) != null;      // Nuvio opens anything: no need for the streaming app
         for (Pick p : picks) {
             if ((kind == null || kind.equals(p.kind))
-                    && (!p.detailed || (p.pkg != null && have.computeIfAbsent(p.pkg, this::installed)))) list.add(p);   // app missing: skip
+                    && (!p.detailed || anyTitle || (p.pkg != null && have.computeIfAbsent(p.pkg, this::installed)))) list.add(p);   // app missing: skip
         }
         if (list.isEmpty()) return list;
         long hour = System.currentTimeMillis() / 3600_000L;
@@ -198,6 +200,36 @@ final class Recs {
     }
 
     /** Name of the service the pick is on ("Netflix"), or empty. */
+    private static String nuvioPkg;
+    private static long nuvioAt;
+
+    /** Nuvio's package when it's installed and chosen for For You (Home Settings), else null. Checked once a minute. */
+    static String nuvio(Context c) {
+        if (!"nuvio".equals(Prefs.forYouApp())) return null;
+        long now = android.os.SystemClock.uptimeMillis();
+        if (nuvioAt == 0 || now - nuvioAt > 60_000) {
+            nuvioAt = now;
+            android.content.Intent probe = new android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("nuvio://meta"));
+            nuvioPkg = null;
+            for (android.content.pm.ResolveInfo ri : c.getPackageManager().queryIntentActivities(probe, 0)) {
+                String pkg = ri.activityInfo == null ? null : ri.activityInfo.packageName;
+                if (pkg == null) continue;
+                if (nuvioPkg == null || pkg.equals("com.nuvio.tv")) nuvioPkg = pkg;   // the official TV app first, else a fork
+            }
+        }
+        return nuvioPkg;
+    }
+
+    /** The title's page in Nuvio (by IMDb id, else TMDB id), or null when Nuvio isn't the choice. */
+    static android.content.Intent nuvioIntent(Context c, Pick p) {
+        String pkg = nuvio(c);
+        if (pkg == null || p == null) return null;
+        String type = "movie".equals(p.kind) ? "movie" : "series";
+        String uri = p.imdb != null ? "nuvio://meta?type=" + type + "&id=" + p.imdb : "nuvio://tmdb/" + type + "/" + p.id;
+        return new android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(uri)).setPackage(pkg)
+                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+    }
+
     static String serviceName(Pick p) {
         return p == null || p.app == null ? "" : SERVICE_NAME.get(p.app);
     }
@@ -453,9 +485,13 @@ final class Recs {
     /** Genre, runtime (or seasons) and the service it's on, among the ones the TV has. */
     private void fetchDetails(Pick p) throws Exception {
         JSONObject o = get("/" + p.kind + "/" + p.id
-                + "?language=" + lang() + "&append_to_response=watch/providers,images,videos&include_image_language=null," + Ui.language + ",en"
+                + "?language=" + lang() + "&append_to_response=watch/providers,images,videos,external_ids&include_image_language=null," + Ui.language + ",en"
                 + "&include_video_language=" + Ui.language + ",en,null");
         p.trailer = bestTrailer(o.optJSONObject("videos"));
+        String imdb = o.optString("imdb_id", "");
+        JSONObject ext = o.optJSONObject("external_ids");
+        if ((imdb.isEmpty() || "null".equals(imdb)) && ext != null) imdb = ext.optString("imdb_id", "");
+        p.imdb = imdb.startsWith("tt") ? imdb : null;
         String best = bestBackdrop(o.optJSONObject("images"));
         if (best != null) p.backdrop = best;
         List<String> parts = new ArrayList<>();
@@ -671,7 +707,8 @@ final class Recs {
             for (Pick p : picks) {
                 a.put(new JSONObject().put("id", p.id).put("kind", p.kind).put("title", p.title).put("backdrop", p.backdrop)
                         .put("meta", p.meta).put("app", p.app == null ? "" : p.app).put("pkg", p.pkg == null ? "" : p.pkg)
-                        .put("detailed", p.detailed).put("trailer", p.trailer == null ? "" : p.trailer));
+                        .put("detailed", p.detailed).put("trailer", p.trailer == null ? "" : p.trailer)
+                        .put("imdb", p.imdb == null ? "" : p.imdb));
             }
             cache.edit().putString("picks", a.toString()).putInt("period", period).putLong("listAt", listAt)
                     .putString("language", listLanguage)
@@ -695,6 +732,7 @@ final class Recs {
             p.pkg = o.optString("pkg").isEmpty() ? null : o.optString("pkg");
             p.detailed = o.optBoolean("detailed");
             p.trailer = o.optString("trailer").isEmpty() ? null : o.optString("trailer");
+            p.imdb = o.optString("imdb").isEmpty() ? null : o.optString("imdb");
             out.add(p);
         }
         return out;
