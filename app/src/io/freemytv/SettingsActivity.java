@@ -578,10 +578,18 @@ public class SettingsActivity extends Activity {
                 case KeyEvent.KEYCODE_NUMPAD_ENTER:
                     if (down) {
                         if (e.getRepeatCount() == 0) okDown = true;
+                        else if (e.getRepeatCount() == 1 && okDown && screen == SHELF_EDIT) {
+                            okDown = false;   // a long press: the app's icon, not on/off the shelf
+                            openIconEditor();
+                        }
                     } else {
                         if (okDown && !e.isCanceled() && spoken.keyClick()) activate();
                         okDown = false;
                     }
+                    return true;
+                case KeyEvent.KEYCODE_MENU:
+                    if (screen != SHELF_EDIT) return false;
+                    if (down && e.getRepeatCount() == 0) openIconEditor();
                     return true;
                 case KeyEvent.KEYCODE_BACK:
                     if (screen == MAIN) return false;   // leaves the settings
@@ -774,6 +782,14 @@ public class SettingsActivity extends Activity {
             refreshShelfRows(pkg);
         }
 
+        /** Hold OK (or Menu) on an app: its own picture for the card (IconActivity). */
+        private void openIconEditor() {
+            if (shelfRows.isEmpty()) return;
+            String[] app = shelfRows.get(pickScroll + focus);
+            activity.startActivity(new Intent(activity, IconActivity.class)
+                    .putExtra(IconActivity.EXTRA_PKG, app[0]).putExtra(IconActivity.EXTRA_LABEL, app[1]));
+        }
+
         /** ← → : moves a shelf app one place earlier or later. */
         private void moveShelfApp(int dir) {
             String pkg = shelfRows.get(pickScroll + focus)[0];
@@ -805,6 +821,8 @@ public class SettingsActivity extends Activity {
             c.drawText(Ui.tr("OK põe ou tira da prateleira (até " + HomeApps.MAX_SHELF + "). ← → mudam a ordem.",
                     "OK adds or removes (up to " + HomeApps.MAX_SHELF + "). ← → change the order.",
                     "OK pone o quita del estante (hasta " + HomeApps.MAX_SHELF + "). ← → cambian el orden."), LIST_X * k + 30 * k, hy, hint);
+            c.drawText(Ui.tr("Segure OK para trocar o ícone do app.", "Hold OK to change the app's icon.",
+                    "Mantén OK para cambiar el ícono de la app."), LIST_X * k + 30 * k, hy + 36 * k, hint);
         }
 
         private void openPicker(int which) {
