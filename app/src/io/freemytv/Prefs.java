@@ -42,6 +42,15 @@ final class Prefs {
         version++;
     }
 
+    // MARK: - TMDB key (typed on the TV; the one in config.properties is the default)
+
+    static String tmdbKey() {
+        String typed = sp().getString("tmdbKey", "").trim();
+        return typed.isEmpty() ? Config.TMDB_KEY.trim() : typed;
+    }
+
+    static void setTmdbKey(String v) { put("tmdbKey", v == null ? "" : v.trim()); }
+
     // MARK: - Language and units
 
     /** "auto", "pt" or "en". */
