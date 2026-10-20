@@ -669,7 +669,7 @@ final class HomeMode {
 
     private static void busy(Context c, String text) {
         JSONObject s = state(c);
-        try { s.put("busy", text).put("error", ""); } catch (JSONException ignored) {}
+        try { s.put("busy", text).put("busyAt", System.currentTimeMillis()).put("error", ""); } catch (JSONException ignored) {}
         save(c, s);
     }
 
