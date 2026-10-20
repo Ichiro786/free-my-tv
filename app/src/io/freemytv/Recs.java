@@ -44,6 +44,7 @@ final class Recs {
         int id;
         String kind;            // "movie" or "tv"
         String title, backdrop, meta = "", app, pkg;
+        String poster;          // TMDB's official poster (2:3), for the tall cards
         String imdb;            // IMDb id (tt…), for opening the title in Nuvio
         String trailer;         // YouTube key of the official trailer (or teaser), null if none
         boolean detailed;
@@ -55,7 +56,7 @@ final class Recs {
     private static final String IMAGES = "https://image.tmdb.org/t/p/original";
     private static final long LIST_EVERY = 6 * 3600_000L;
     /** Bump when what is saved for each title changes (the saved list is discarded and fetched again). */
-    private static final int CACHE_VERSION = 5;
+    private static final int CACHE_VERSION = 6;
     private static final int MANHA = 0, TARDE = 1, NOITE = 2;
     static final String[] PERIOD_LABEL = {"PARA ESTA MANHÃ", "PARA ESTA TARDE", "PARA ESTA NOITE"};
     static final String[] PERIOD_LABEL_EN = {"THIS MORNING", "THIS AFTERNOON", "TONIGHT"};
@@ -101,6 +102,9 @@ final class Recs {
     private final List<Listener> listeners = new ArrayList<>();
     private final Map<String, Backdrop> images = new LinkedHashMap<>();   // this hour's, built and ready to draw
     private final java.util.Set<String> pending = new java.util.HashSet<>();
+    private final Map<String, Bitmap> posters = new LinkedHashMap<>();    // the tall cards' posters, ready to draw
+    private final java.util.Set<String> posterPending = new java.util.HashSet<>();
+    private static final String POSTERS = "https://image.tmdb.org/t/p/w780";
     private volatile List<Pick> picks = new ArrayList<>();
     private volatile int period = -1;
     private volatile long listAt;
@@ -251,6 +255,61 @@ final class Recs {
             }
         });
         return null;
+    }
+
+    /** The pick's official poster, ready to draw (or null: loads it in the background and notifies when ready). */
+    Bitmap poster(Pick p) {
+        if (p == null || p.poster == null) return null;
+        final String key = p.poster;
+        synchronized (posters) {
+            Bitmap b = posters.get(key);
+            if (b != null) return b;
+            if (!posterPending.add(key)) return null;
+        }
+        io.execute(() -> {
+            try {
+                loadPoster(key);
+            } finally {
+                synchronized (posters) { posterPending.remove(key); }
+            }
+        });
+        return null;
+    }
+
+    private void loadPoster(String key) {
+        File dir = new File(context.getCacheDir(), "posters");
+        File f = new File(dir, key.replace("/", ""));
+        try {
+            if (!f.exists()) {
+                //noinspection ResultOfMethodCallIgnored
+                dir.mkdirs();
+                File part = new File(f.getPath() + ".part");
+                HttpURLConnection c = (HttpURLConnection) new URL(POSTERS + key).openConnection();
+                c.setConnectTimeout(8000);
+                c.setReadTimeout(20000);
+                try (InputStream in = c.getInputStream(); FileOutputStream out = new FileOutputStream(part)) {
+                    byte[] buffer = new byte[16384];
+                    int n;
+                    while ((n = in.read(buffer)) > 0) out.write(buffer, 0, n);
+                } finally {
+                    c.disconnect();
+                }
+                if (!part.renameTo(f)) throw new IOException("couldn't save the poster");
+                prune(dir);
+            }
+            Bitmap b = BitmapFactory.decodeFile(f.getPath());
+            if (b == null) throw new IOException("unreadable poster");
+            Bitmap g = Backdrop.gpu(b);
+            synchronized (posters) {
+                posters.put(key, g);
+                while (posters.size() > 12) posters.remove(posters.keySet().iterator().next());
+            }
+            notifyListeners();
+        } catch (IOException | RuntimeException | OutOfMemoryError e) {
+            //noinspection ResultOfMethodCallIgnored
+            f.delete();
+            AppLog.w("recommendation poster: " + e.getMessage());
+        }
     }
 
     private boolean hasImage(Pick p) {
@@ -479,6 +538,8 @@ final class Recs {
         p.kind = kind;
         p.title = o.optString(kind.equals("movie") ? "title" : "name");
         p.backdrop = backdrop;
+        String poster = o.optString("poster_path", "");
+        p.poster = poster.isEmpty() || "null".equals(poster) ? null : poster;
         list.add(p);
     }
 
@@ -494,6 +555,9 @@ final class Recs {
         p.imdb = imdb.startsWith("tt") ? imdb : null;
         String best = bestBackdrop(o.optJSONObject("images"));
         if (best != null) p.backdrop = best;
+        // The official poster in the TV's language (the one TMDB shows for the title), for the tall cards.
+        String poster = o.optString("poster_path", "");
+        if (!poster.isEmpty() && !"null".equals(poster)) p.poster = poster;
         List<String> parts = new ArrayList<>();
         JSONArray genres = o.optJSONArray("genres");
         if (p.kind.equals("tv")) parts.add(Ui.tr("Série", "Series"));
@@ -708,7 +772,8 @@ final class Recs {
                 a.put(new JSONObject().put("id", p.id).put("kind", p.kind).put("title", p.title).put("backdrop", p.backdrop)
                         .put("meta", p.meta).put("app", p.app == null ? "" : p.app).put("pkg", p.pkg == null ? "" : p.pkg)
                         .put("detailed", p.detailed).put("trailer", p.trailer == null ? "" : p.trailer)
-                        .put("imdb", p.imdb == null ? "" : p.imdb));
+                        .put("imdb", p.imdb == null ? "" : p.imdb)
+                        .put("poster", p.poster == null ? "" : p.poster));
             }
             cache.edit().putString("picks", a.toString()).putInt("period", period).putLong("listAt", listAt)
                     .putString("language", listLanguage)
@@ -733,6 +798,7 @@ final class Recs {
             p.detailed = o.optBoolean("detailed");
             p.trailer = o.optString("trailer").isEmpty() ? null : o.optString("trailer");
             p.imdb = o.optString("imdb").isEmpty() ? null : o.optString("imdb");
+            p.poster = o.optString("poster").isEmpty() ? null : o.optString("poster");
             out.add(p);
         }
         return out;

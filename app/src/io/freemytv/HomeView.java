@@ -2651,7 +2651,21 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             float sw = cell.width() / sc, sh = cell.height() / sc;
             cardSrc.set(Math.round((iw - sw) / 2), Math.round((ih - sh) / 2), Math.round((iw + sw) / 2), Math.round((ih + sh) / 2));
             c.drawBitmap(img, cardSrc, cell, bitmapPaint);
-        } else {
+        }
+        // Tall cards show the title's official poster; it gives way to the backdrop as the card widens.
+        float posterAlpha = 1f - smoothstep(0.08f, 0.55f, Ui.clamp(cardWide[i].value));
+        Bitmap poster = posterAlpha > 0.004f && p != null ? recs.poster(p) : null;
+        if (poster != null) {
+            float iw = poster.getWidth(), ih = poster.getHeight();
+            float sc = Math.max(cell.width() / iw, cell.height() / ih);
+            float sw = cell.width() / sc, sh = cell.height() / sc;
+            cardSrc.set(Math.round((iw - sw) / 2), Math.round((ih - sh) / 2), Math.round((iw + sw) / 2), Math.round((ih + sh) / 2));
+            int was = bitmapPaint.getAlpha();
+            bitmapPaint.setAlpha(Math.round(255 * posterAlpha));
+            c.drawBitmap(poster, cardSrc, cell, bitmapPaint);
+            bitmapPaint.setAlpha(was);
+        }
+        if (img == null && poster == null) {
             fill.setShader(null);
             fill.setColor(tone(0xFFDADADF, 0xFF2C2C2E));
             c.drawRect(cell, fill);
@@ -2731,10 +2745,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                     if (next == cardIndex) return true;
                     cardIndex = next;
                 } else if (dy < 0) {
-                    // Up goes straight to the round buttons (Live TV, HDMI Inputs, Settings), the closest one; the
-                    // tabs are one press to the left of them.
+                    // Up goes to the selected tab (Explore, Movies or Shows); one more Up reaches Live TV.
                     zone = Z_TOP;
-                    topIndex = 3 + nearestButton(cardRects[cardIndex].centerX());
+                    topIndex = Math.max(0, Math.min(2, tab));
                 } else {
                     zone = Z_SHELF;
                     if (!shelf.isEmpty()) shelfIndex = nearest(tileRects, tileRects.length, cardRects[cardIndex].centerX());
@@ -2753,6 +2766,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                         zone = Z_CARDS;
                         cardIndex = nearest(cardRects, cards.size(), topRects[topIndex].centerX());
                     }
+                } else if (topIndex < 3) {
+                    // Up from a tab: the round buttons, starting at Live TV.
+                    topIndex = 3;
                 } else {
                     return true;
                 }

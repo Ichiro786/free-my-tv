@@ -1,13 +1,11 @@
 package io.freemytv;
 
 import android.annotation.SuppressLint;
-import android.graphics.Outline;
 import android.graphics.RectF;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.ViewOutlineProvider;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
@@ -79,7 +77,8 @@ final class Trailer {
         AppLog.w("trailer " + videoKey + ": loading");
         main.removeCallbacks(giveUp);
         main.postDelayed(giveUp, GIVE_UP_MS);
-        web.loadDataWithBaseURL(ORIGIN + "/", page(videoKey, Math.round(r.width()), Math.round(r.height()), muted),
+        float density = parent.getResources().getDisplayMetrics().density;
+        web.loadDataWithBaseURL(ORIGIN + "/", page(videoKey, cornerRadius / Math.max(0.5f, density), muted),
                 "text/html", "utf-8", null);
     }
 
@@ -131,7 +130,6 @@ final class Trailer {
         web.measure(View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY),
                 View.MeasureSpec.makeMeasureSpec(h, View.MeasureSpec.EXACTLY));
         web.layout(Math.round(rect.left), Math.round(rect.top), Math.round(rect.left) + w, Math.round(rect.top) + h);
-        web.invalidateOutline();
     }
 
     /** Follows the card's layer when it moves (the drawer lifts it). */
@@ -148,7 +146,7 @@ final class Trailer {
             s.setDomStorageEnabled(true);
             s.setMediaPlaybackRequiresUserGesture(false);
             s.setUserAgentString(s.getUserAgentString().replace("; wv", ""));
-            v.setBackgroundColor(0xFF000000);
+            v.setBackgroundColor(0);   // transparent: the page draws its own rounded black card
             v.setFocusable(false);
             v.setFocusableInTouchMode(false);
             v.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
@@ -158,12 +156,8 @@ final class Trailer {
             v.setWebViewClient(new WebViewClient());
             v.setWebChromeClient(new WebChromeClient());
             v.addJavascriptInterface(new Bridge(), "Android");
-            v.setOutlineProvider(new ViewOutlineProvider() {
-                @Override public void getOutline(View view, Outline outline) {
-                    outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), radius);
-                }
-            });
-            v.setClipToOutline(true);
+            // No outline clip: on TV WebViews a rounded outline clip around the video left most of the picture
+            // un-repainted (black, build 12). The page rounds its own corners instead (CSS, same radius).
             v.setAlpha(HIDDEN);
             v.setVisibility(View.INVISIBLE);
             v.setWebChromeClient(new WebChromeClient() {
@@ -182,26 +176,34 @@ final class Trailer {
         }
     }
 
-    /** YouTube's IFrame player, sized to cover the card (16:9 cropped to the card's shape) and centered. */
-    private static String page(String videoKey, int w, int h, boolean muted) {
+    /**
+     * YouTube's IFrame player covering the card: CSS keeps the 16:9 frame exactly as wide or as tall as needed to fill
+     * the card's shape (cropping the rest, which on most trailers is the letterbox bars) and centered, at every size,
+     * with no measuring in JavaScript. The rounded black card is the page's own (radius in CSS pixels).
+     */
+    private static String page(String videoKey, float radiusCss, boolean muted) {
+        String rad = String.format(java.util.Locale.US, "%.1f", radiusCss);
         return "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>"
-                + "<style>html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000}"
-                + "#p{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);border:0;pointer-events:none}</style>"
+                + "<style>html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent}"
+                + "#w{position:fixed;left:0;top:0;right:0;bottom:0;overflow:hidden;border-radius:" + rad + "px;background:#000;"
+                + "isolation:isolate;transform:translateZ(0)}"
+                + "#p,#w iframe{position:absolute;left:50%;top:50%;border:0;pointer-events:none;"
+                + "width:100vw!important;height:56.25vw!important;min-width:177.78vh!important;min-height:100vh!important;"
+                + "transform:translate(-50%,-50%) scale(1.015)}</style>"
                 + "<meta name='referrer' content='strict-origin-when-cross-origin'>"
-                + "</head><body><div id='p'></div><script>"
+                + "</head><body><div id='w'><div id='p'></div></div><script>"
                 + "var K='" + videoKey.replaceAll("[^A-Za-z0-9_-]", "") + "',M=" + (muted ? 1 : 0) + ",P=null,R=null,started=0;"
-                + "function cover(){var W=innerWidth||" + w + ",H=innerHeight||" + h + ",vw=W,vh=W*9/16;"
-                + "if(vh<H){vh=H;vw=H*16/9;}return[Math.ceil(vw*1.02),Math.ceil(vh*1.02)];}"
+                + "function nocc(p){try{p.unloadModule('captions');p.unloadModule('cc');}catch(x){}}"
                 + "function ramp(to,ms,done){if(!P||M)return done&&done();clearInterval(R);var from=P.getVolume?P.getVolume():0,"
                 + "t0=Date.now();R=setInterval(function(){var e=Math.min(1,(Date.now()-t0)/ms);e=e*e*(3-2*e);"
                 + "try{P.setVolume(Math.round(from+(to-from)*e));}catch(x){}if(e>=1){clearInterval(R);done&&done();}},40);}"
                 + "function fadeOut(){ramp(0,220,function(){try{P.pauseVideo();}catch(x){}});}"
-                + "function onYouTubeIframeAPIReady(){var s=cover();P=new YT.Player('p',{width:s[0],height:s[1],videoId:K,"
+                + "function onYouTubeIframeAPIReady(){P=new YT.Player('p',{width:'100%',height:'100%',videoId:K,"
                 + "host:'https://www.youtube.com',playerVars:{autoplay:1,mute:M,controls:0,disablekb:1,fs:0,iv_load_policy:3,"
-                + "modestbranding:1,playsinline:1,rel:0,loop:1,playlist:K,cc_load_policy:0,origin:'" + ORIGIN + "'},"
-                + "events:{onReady:function(e){if(M)e.target.mute();else{e.target.unMute();e.target.setVolume(0);}"
+                + "modestbranding:1,playsinline:1,rel:0,loop:1,playlist:K,cc_load_policy:0,cc_lang_pref:'none',origin:'" + ORIGIN + "'},"
+                + "events:{onReady:function(e){nocc(e.target);if(M)e.target.mute();else{e.target.unMute();e.target.setVolume(0);}"
                 + "e.target.setPlaybackQuality&&e.target.setPlaybackQuality('hd1080');e.target.playVideo();},"
-                + "onStateChange:function(e){if(e.data==1&&!started){started=1;Android.playing(K);ramp(100,1500);}},"
+                + "onStateChange:function(e){if(e.data==1)nocc(e.target);if(e.data==1&&!started){started=1;Android.playing(K);ramp(100,1500);}},"
                 + "onError:function(e){Android.failed(K,''+e.data);}}});}"
                 + "</script><script src='https://www.youtube.com/iframe_api'></script></body></html>";
     }
