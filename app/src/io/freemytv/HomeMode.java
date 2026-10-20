@@ -195,6 +195,7 @@ final class HomeMode {
             List<String> targets = targets(home, dream);
             Set<String> disabled = new HashSet<>(stringList(state(c), "disabled"));
             Set<String> present = packages(adb, "");
+            String homeFail = "";
             int done = 0;
             for (String pkg : targets) {
                 done++;
@@ -202,8 +203,26 @@ final class HomeMode {
                 if (PROTECTED.contains(pkg) || !present.contains(pkg) || owners.contains(pkg)) continue;
                 String out = adb.shell("pm disable-user --user 0 " + pkg);
                 if (out.contains("disabled-user")) disabled.add(pkg);
-                else AppLog.w("could not turn off " + pkg + ": " + out.trim());
+                else {
+                    AppLog.w("could not turn off " + pkg + ": " + out.trim());
+                    if (pkg.equals(packageOf(home))) homeFail = out.trim();
+                }
             }
+            // Say on screen why the TV's own home screen could still answer the Home button.
+            String stockPkg = packageOf(home);
+            String problem = null;
+            if (stockPkg != null && !stockPkg.isEmpty() && !stockPkg.equals(PKG)
+                    && packages(adb, "-e").contains(stockPkg)) {
+                problem = "home=" + home + " still on"
+                        + (owners.contains(stockPkg) ? " (saved Wi-Fi)" : "")
+                        + (PROTECTED.contains(stockPkg) ? " (protected)" : "")
+                        + (homeFail.isEmpty() ? "" : ": " + homeFail);
+            } else if (stockPkg == null || stockPkg.isEmpty()) {
+                problem = "TV home not found; HOME apps: " + adb.shell("cmd package query-activities --brief --user 0"
+                        + " -a android.intent.action.MAIN -c android.intent.category.HOME").trim().replace("\n", ", ");
+            }
+            String holder = homeHolder(adb);
+            if (!holder.contains(PKG)) problem = (problem == null ? "" : problem + "; ") + "Home button → " + holder;
             Watchdog.clear(c);
             s = state(c);
             s.put("mode", FREE).put("since", System.currentTimeMillis()).put("homeReverted", false)
@@ -220,7 +239,7 @@ final class HomeMode {
                     "Free My TV is on: new home screen and screensaver, " + disabled.size() + " apps turned off."));
             busy(c, Ui.tr("Medindo o Free My TV…", "Measuring Free My TV…"));
             measureHomeTime(c, adb, FREE);
-            done(c, null);
+            done(c, problem == null ? null : Ui.tr("Free My TV ligado, mas: ", "Free My TV is on, but: ", "Free My TV activado, pero: ") + problem);
             adb.shell("am start -a android.intent.action.MAIN -c android.intent.category.HOME");
             ModeJob.schedule(c, ModeJob.MEMORY, FREE, 120_000);
         } catch (Exception e) {
