@@ -70,6 +70,7 @@ final class HomeApps {
         float logoInk;      // fraction of the logo with ink (thin logos are drawn larger, with the same "weight")
         float logoScale = 1; // size tweak by eye (compact logos need more)
         boolean connected = true;
+        boolean custom;     // the user's own picture (Settings > Shelf > hold OK): fills the card, center-cropped
     }
 
     /**
@@ -137,9 +138,38 @@ final class HomeApps {
                 it.logoDark = ownLogoCached(c, d[0] + "-dark");
                 it.logoScale = Float.parseFloat(d[5]);
             }
+            if (it.tile != null && IconActivity.iconFile(c, pkg).exists()) {
+                it.logo = null;
+                it.logoDark = null;
+                it.custom = true;
+            }
             items.add(it);
         }
         return items;
+    }
+
+    /** The user's own picture for an app's card, or null. */
+    private static Bitmap customTile(Context c, String pkg) {
+        java.io.File f = IconActivity.iconFile(c, pkg);
+        if (!f.exists()) return null;
+        try {
+            return BitmapFactory.decodeFile(f.getPath());
+        } catch (RuntimeException | OutOfMemoryError e) {
+            return null;
+        }
+    }
+
+    /** After the user picks (or removes) a picture: the next load builds that app's card again. */
+    static synchronized void customIconChanged(String pkg) {
+        TILES.remove(pkg);
+        String[] d = known(pkg);
+        if (d != null) TILES.remove(d[0]);
+    }
+
+    /** The app's card as the home screen shows it (for the icon screen's preview). */
+    static Bitmap cardFor(Context c, String pkg) {
+        String[] d = known(pkg);
+        return d == null ? appTile(c, null, pkg, 0) : appTile(c, d[0], d[2], 0xFF000000 | Integer.parseInt(d[3], 16));
     }
 
     private static String[] known(String pkg) {
@@ -712,8 +742,11 @@ final class HomeApps {
     private static synchronized Bitmap appTile(Context c, String key, String pkg, int brand) {
         String cacheKey = key != null ? key : pkg;
         if (TILES.containsKey(cacheKey)) return TILES.get(cacheKey);
-        Bitmap logo = key == null ? null : ownLogo(c, key);
-        Bitmap tile = logo != null ? logoTile(logo, brand) : bannerTile(c, pkg);
+        Bitmap tile = customTile(c, pkg);
+        if (tile == null) {
+            Bitmap logo = key == null ? null : ownLogo(c, key);
+            tile = logo != null ? logoTile(logo, brand) : bannerTile(c, pkg);
+        }
         if (tile == null) tile = iconTile(c, pkg);
         tile.setHasMipMap(true);
         TILES.put(cacheKey, tile);
