@@ -1143,10 +1143,19 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             clip.addRoundRect(cell, r, r, Path.Direction.CW);
             c.save();
             c.clipPath(clip);
-            if (it.tile != null) c.drawBitmap(it.tile, null, cell, bitmapPaint);
+            if (it.tile != null && it.custom) {
+                // The user's own picture: center-cropped to the tile (never stretched).
+                float bw2 = it.tile.getWidth(), bh2 = it.tile.getHeight();
+                float sc = Math.max(cell.width() / bw2, cell.height() / bh2);
+                float sw = cell.width() / sc, sh = cell.height() / sc;
+                customSrc.set(Math.round((bw2 - sw) / 2), Math.round((bh2 - sh) / 2), Math.round((bw2 + sw) / 2), Math.round((bh2 + sh) / 2));
+                c.drawBitmap(it.tile, customSrc, cell, bitmapPaint);
+            } else if (it.tile != null) c.drawBitmap(it.tile, null, cell, bitmapPaint);
             c.restore();
         }
     }
+
+    private final android.graphics.Rect customSrc = new android.graphics.Rect();
 
     /**
      * Logo at its "optical" size (all with the same amount of ink, plus each one's own adjustment, never past 80% × 62%
