@@ -370,6 +370,27 @@ final class HomeApps {
         return items;
     }
 
+    /** Apps pinned from All Apps (Prefs.pinned), in pin order; uninstalled ones are skipped. */
+    static List<Item> pinned(Context c) {
+        PackageManager pm = c.getPackageManager();
+        List<Item> items = new ArrayList<>();
+        for (String pkg : Prefs.pinned()) {
+            if (launchIntent(pm, pkg) == null) continue;
+            Item it = new Item();
+            it.kind = APP;
+            it.pkg = pkg;
+            it.key = "pin:" + pkg;
+            try {
+                it.label = String.valueOf(pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)));
+            } catch (PackageManager.NameNotFoundException e) {
+                continue;
+            }
+            it.tile = cardFor(c, pkg);
+            items.add(it);
+        }
+        return items;
+    }
+
     private static Item special(Context c, int kind, String key, String label, String symbol) {
         Item it = shortcut(kind, key, label, symbol);
         it.tile = symbolTile(c, key, symbol);

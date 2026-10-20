@@ -52,7 +52,7 @@ import java.util.concurrent.Executors;
  * Measurements are in a 1920×1080 space (k = width / 1920). The screen is split into layers so the TV's weak GPU only
  * redraws what changed.
  */
-final class HomeView extends ViewGroup implements Choreographer.FrameCallback, HomeData.Listener, Recs.Listener {
+final class HomeView extends ViewGroup implements Choreographer.FrameCallback, HomeData.Listener, Recs.Listener, Trailer.Host {
     // tvOS grid (Human Interface Guidelines): content inside the safe area, 80 px from the sides and 60 from top and
     // bottom; 40 px between items; 7 columns of 217 px (the apps). The shelf glass extends 36 px past the tiles (the
     // same padding on all four sides) and the tile corners are concentric with it (glass radius = radius + padding).
@@ -90,7 +90,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private static final String[] TABS_EN = {"Explore", "Movies", "Shows"};
     private static final String[] TABS_ES = {"Explorar", "Películas", "Series"};
     private static final String[] TAB_KIND = {null, "movie", "tv"};
-    private static final int Z_TOP = 4, Z_CARDS = 5;
+    private static final int Z_TOP = 4, Z_CARDS = 5, Z_PINNED = 6;
 
     private final Activity activity;
     private final Scene scene = new Scene();
@@ -129,6 +129,23 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private final RectF[] topRects = new RectF[6];
     private final Spring[] cardFocus = new Spring[3];
     private final RectF[] cardRects = new RectF[3];
+    // Which card is the wide one: it follows the focus (one weight per card, 1 = wide), springing between shapes.
+    private final Spring[] cardWide = new Spring[3];
+    private int wideIndex;
+    private Trailer trailer;
+    private String failedTrailer;
+    private final Runnable startTrailer = this::startTrailer;
+    private final Runnable followWide = this::followWideBackdrop;
+
+    // Pinned apps (long press OK in All Apps): a row of cards at the top of the bottom drawer
+    private List<HomeApps.Item> pinnedItems = new ArrayList<>();
+    private Spring[] pinFocus = new Spring[0];
+    private RectF[] pinRects = new RectF[0];
+    private int pinIndex;
+    private final Spring pinScroll = new Spring(0.36f, 1f, 0);       // horizontal, in px
+    private final Spring drawerScroll = new Spring(0.42f, 1f, 0);    // 0..1: the drawer scrolled down to the inputs
+    private static final float PIN_ROW_SHIFT = 212, PIN_W = 224, PIN_GAP = 26;
+    private final java.util.Set<String> pinnedSet = new java.util.HashSet<>();
     private final List<HomeApps.Item> lightButtons = new ArrayList<>();
     private Paint lTitle, lTab, lTabOn, lCardTitle, lCardMeta, lQuote, lTip;
     private Shader lightGradient;
@@ -162,16 +179,23 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private boolean readShelfLook() {
         float scale = Prefs.tileSize() / 100f, radius = Prefs.tileRadius();
         boolean outline = !"grow".equals(Prefs.focusStyle());
-        boolean changed = scale != tileScale || radius != tileRadius || outline != outlineFocus;
+        int dock = Prefs.dockSize(), growPct = Prefs.growAmount();
+        boolean changed = scale != tileScale || radius != tileRadius || outline != outlineFocus || dock != dockPct
+                || growPct != growSetting;
         tileScale = scale;
         tileRadius = radius;
         outlineFocus = outline;
+        dockPct = dock;
+        growSetting = growPct;
         shelfPad = outline ? 14 : 22;   // the glass rim around the cards (growth needs a little more)
         return changed;
     }
 
+    private int dockPct = 0, growSetting = 0;   // 0 = automatic
+    private float growNow = 0.12f;              // the focus growth layoutShelf() worked out
+
     private float grow() {
-        return outlineFocus ? 0 : FOCUS_GROW;
+        return outlineFocus ? 0 : growNow;
     }
     private int shelfIndex;
 
@@ -220,7 +244,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     // Frames
     private boolean running, tilesDirty, statusDirty, heroDirty, drawerDirty, gridDirty, motionDirty = true;
-    private boolean drawerWasMoving;
+    private boolean drawerWasMoving, scrollWasMoving;
     private long lastNanos, resumedAt, lastStep;
     private int w, h;
     private float k = 1;
@@ -340,7 +364,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         for (int i = 0; i < 3; i++) {
             cardFocus[i] = new Spring(0.32f, 0.78f, 0);
             cardRects[i] = new RectF();
+            // Critically damped, a touch slower than the focus: the shapes trade places smoothly, without a wobble.
+            cardWide[i] = new Spring(0.5f, 1f, i == 0 ? 1 : 0);
         }
+        trailer = new Trailer(this, indexOfChild(heroLayer) + 1, this);
         makeLightButtons();
         recs.setLight(true);
         checkNight(false);
@@ -351,6 +378,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         setShelf(HomeApps.shelf(a, false));
         setStatusItems(statusList(a));
         setDrawerItems(drawerList(a));
+        pinnedSet.addAll(Prefs.pinned());
     }
 
     // MARK: - Lifecycle (called by HomeActivity)
@@ -383,11 +411,15 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         invalidateAll();
         Choreographer.getInstance().postFrameCallback(this);
         spoken.readAgain();
+        updateTrailer();
     }
 
     void pause() {
         if (!running) return;
         running = false;
+        handler.removeCallbacks(startTrailer);
+        handler.removeCallbacks(followWide);
+        if (trailer != null) trailer.release();
         Choreographer.getInstance().removeFrameCallback(this);
         handler.removeCallbacks(tick);
         data.removeListener(this);
@@ -462,7 +494,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         // cheaper for the GPU to composite on every frame of the drawer animation.
         measure(platter, width, Math.round(350 * kk));   // 730..1080: room for cards up to 140%
         measure(tiles, width, Math.round(320 * kk));     // 760..1080
-        measure(drawerLayer, width, Math.round(600 * kk));
+        measure(drawerLayer, width, Math.round(830 * kk));   // 470..1300: with pinned apps the drawer scrolls
         measure(sheetLayer, width, height);
         measure(toastLayer, Math.round(1000 * kk), Math.round(220 * kk));
         setMeasuredDimension(width, height);
@@ -485,6 +517,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         sheetLayer.setPivotX(width / 2f);
         sheetLayer.setPivotY(height / 2f);
         place(toastLayer, (width - toastLayer.getMeasuredWidth()) / 2, 0);
+        if (trailer != null) trailer.layout();
     }
 
     private static void place(View v, int x, int y) {
@@ -588,7 +621,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         boolean topMoving = step(topFocus, dt), cardsMoving = step(cardFocus, dt);
         if (topMoving) status.invalidate();
         heroMoving |= topMoving | cardsMoving;
-        boolean drawerItemsMoving = step(drawerFocus, dt);
+        boolean drawerItemsMoving = step(drawerFocus, dt) | step(pinFocus, dt) | pinScroll.step(dt);
+        boolean scrollMoving = drawerScroll.step(dt);
+        boolean wideMoving = step(cardWide, dt);
+        if (wideMoving) layoutCards();
+        heroMoving |= wideMoving;
         boolean gridMoving = step(gridFocus, dt) | scroll.step(dt);
         boolean drawerMoving = drawer.step(dt);
         boolean sheetMoving = sheet.step(dt);
@@ -597,7 +634,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         boolean bgFading = tickBackgroundFade(up);
         boolean nightMoving = tickNight(up);
 
-        if (drawerMoving || sheetMoving || motionDirty) updateMotion();
+        if (drawerMoving || sheetMoving || scrollMoving || motionDirty) updateMotion();
         // Opening and closing the drawer only moves the cached layers: redrawing the glass on every frame made the TV
         // drop frames (measured: ~50 ms of GPU per frame). The app tiles have no glass; the top buttons fade out as
         // they rise; the drawer is drawn resting in place; the glass shelf is redrawn once the drawer stops, so the
@@ -608,8 +645,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (drawerItemsMoving || drawerDirty || bgFading) drawerLayer.invalidate();
         if (gridMoving || gridDirty) sheetLayer.invalidate();
         if (drawerMoving || bgFading) sky.invalidate();
-        if (bgFading || (drawerWasMoving && !drawerMoving)) platter.invalidate();
+        if (bgFading || (drawerWasMoving && !drawerMoving && !scrollMoving) || (scrollWasMoving && !scrollMoving)) platter.invalidate();
         drawerWasMoving = drawerMoving;
+        scrollWasMoving = scrollMoving;
         tilesDirty = statusDirty = heroDirty = drawerDirty = gridDirty = motionDirty = false;
         if (updateClock()) {
             layoutStatus();
@@ -638,13 +676,15 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         float d = drawer.value, dc = Ui.clamp(d), s = Ui.clamp(sheet.value);
         float home = 1 - s, top = home * (1 - smoothstep(0, 0.32f, dc));
         float shift = SHIFT * k;
-        float lift = -d * shift;
+        float scrolled = drawerScroll.value * PIN_ROW_SHIFT * k * dc;
+        float lift = -d * shift - scrolled;
         show(heroLayer, top, lift);
         show(status, top, lift);
         show(platter, home, lift);
         show(tiles, home, lift);
         float da = home * smoothstep(0.1f, 0.6f, dc);
-        drawerLayer.setTranslationY((1 - d) * shift);
+        drawerLayer.setTranslationY((1 - d) * shift - scrolled);
+        if (trailer != null) trailer.setTranslationY(lift);
         drawerLayer.setAlpha(da);
         drawerLayer.setVisibility(da > 0.002f ? VISIBLE : INVISIBLE);
         sheetLayer.setVisibility(s > 0.001f || sheetOpen ? VISIBLE : INVISIBLE);
@@ -1042,9 +1082,16 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private float lastTileW;
     private final boolean shelfOverflows = false;   // at most 6 apps (HomeApps.MAX_SHELF): the row always fits
 
+    private float platterRadius = (TILE_RADIUS + SHELF_PAD);
+
     /**
-     * The glass bar keeps its original size (126 px cards with 40 px of glass, 48 px apart); the 16:9 cards inside fill
-     * it, with a thin rim of glass. "App icon size" shrinks them from that maximum (100%).
+     * Dock and cards. The reference is the original glass bar (126 px cards, 40 px of glass, 48 px apart, 62 px corners).
+     *  - Dock size "Auto": the cards are worked out inside that reference ("App icon size" shrinks them from the largest
+     *    that fits) and the glass then hugs them with an even rim, so smaller icons never float in an oversized bar.
+     *  - Dock size N%: the glass is the reference scaled to N% (never wider than the screen's safe area) and the cards
+     *    fill it the same way.
+     * With the Grow focus, the gap between cards opens up so a grown card clears its neighbours, and the growth itself
+     * comes from autoGrow() (or the user's fixed amount, still kept on screen).
      */
     private void layoutShelf() {
         readShelfLook();
@@ -1052,29 +1099,78 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         float gap0 = TILE_GAP * k, pad0 = SHELF_PAD * k, th0 = L_TILE_H * k;
         float full = (CONTENT_R - MARGIN) * k;
         float tw0 = Math.min(270 * k, (full - Math.max(0, n - 1) * gap0) / Math.max(1, n));
-        float width0 = n * tw0 + Math.max(0, n - 1) * gap0;
-        float top = L_PLATTER_TOP0 * k, bottom = top + th0 + 2 * pad0;
-        platterRect.set((w - width0) / 2f - pad0, top, (w + width0) / 2f + pad0, bottom);
-        float rim = shelfPad * k, gap = 20 * k;
-        float innerW = platterRect.width() - 2 * rim, innerH = platterRect.height() - 2 * rim;
-        float tw = Math.min((innerW - Math.max(0, n - 1) * gap) / Math.max(1, n), innerH * 16f / 9f) * tileScale;
+        float refW = n * tw0 + Math.max(0, n - 1) * gap0 + 2 * pad0, refH = th0 + 2 * pad0;
+        float cy = (L_PLATTER_TOP0 * k) + refH / 2;
+        float maxW = w - 2 * 40 * k;   // safe area: overscan on older TVs can crop the screen's edge
+        float glassW = refW, glassH = refH;
+        if (dockPct > 0) {
+            glassW = Math.min(maxW, refW * dockPct / 100f);
+            glassH = refH * dockPct / 100f;
+        }
+        float rim = shelfPad * k;
+        float gap = 20 * k, tw = 0;
+        // The gap depends on the card width and the card width on the gap: two passes settle it.
+        for (int pass = 0; pass < 3; pass++) {
+            float innerW = glassW - 2 * rim, innerH = glassH - 2 * rim;
+            tw = Math.min((innerW - Math.max(0, n - 1) * gap) / Math.max(1, n), innerH * 16f / 9f) * tileScale;
+            if (outlineFocus) break;
+            float g = growSetting > 0 ? growSetting / 100f : idealGrow(tw * 9f / 16f);
+            gap = Math.max(20 * k, Math.min(44 * k, tw * g / 2 + 10 * k));
+        }
         float th = tw * 9f / 16f;
         float width = n * tw + Math.max(0, n - 1) * gap;
-        float x = (w - width) / 2f, y = platterRect.centerY() - th / 2;
+        if (dockPct == 0) {
+            glassW = Math.min(maxW, width + 2 * rim);
+            glassH = th + 2 * rim;
+        }
+        platterRect.set((w - glassW) / 2f, cy - glassH / 2, (w + glassW) / 2f, cy + glassH / 2);
+        platterRadius = Math.min(glassH / 2, (TILE_RADIUS + SHELF_PAD) * k * glassH / refH) / k;
+        float x = (w - width) / 2f, y = cy - th / 2;
         for (int i = 0; i < n; i++) {
             tileRects[i].set(x, y, x + tw, y + th);
             x += tw + gap;
         }
+        growNow = n == 0 ? 0.12f : solveGrow(tw, th, gap);
         if (Math.abs(tw - lastTileW) > 0.5f) {
             crispLogos.clear();
             lastTileW = tw;
         }
+        platter.invalidate();
+    }
+
+    /**
+     * How much a card should grow for the focus to read clearly without looking bloated: about 20 px of extra height at
+     * 1080p (a constant visual "lift", like tvOS), so small cards grow relatively more and big ones less, kept between
+     * 8% and 16%.
+     */
+    private float idealGrow(float th) {
+        return Math.max(0.08f, Math.min(0.16f, 20 * k / Math.max(1, th)));
+    }
+
+    /**
+     * The growth for the current layout. Automatic: the ideal amount, limited so that the grown card (1) keeps at least
+     * 6 px of air to each neighbour, (2) stays inside the screen's safe area at both ends, (3) rises out of the glass by
+     * no more than its rim, and (4) stays within the tiles layer that draws it. A fixed amount from the settings only
+     * honours (2) and (4), the limits that would cut the card off.
+     */
+    private float solveGrow(float tw, float th, float gap) {
+        float safe = 40 * k;
+        float edge = 2 * (tileRects[0].left - safe) / tw;
+        float layerTop = 760 * k + 16 * k, layerBottom = 1080 * k - 30 * k;   // room for the focus shadow
+        float cy = tileRects[0].centerY();
+        float layer = Math.min(2 * (cy - layerTop) / th, 2 * (layerBottom - cy) / th) - 1;
+        float hard = Math.min(edge, layer);
+        if (growSetting > 0) return Math.max(0.02f, Math.min(growSetting / 100f, hard));
+        float neighbours = 2 * (gap - 6 * k) / tw;
+        float glass = (platterRect.height() + 2 * shelfPad * k) / th - 1;
+        float g = Math.min(Math.min(idealGrow(th), neighbours), Math.min(glass, hard));
+        return Math.max(0.04f, g);
     }
 
     /** Shelf layer: the glass bar and its shadow (it only changes with the background). */
     private void drawPlatter(Canvas c) {
         if (shelf.isEmpty()) return;
-        float radius = (TILE_RADIUS + SHELF_PAD) * k;   // the glass keeps its original shape
+        float radius = platterRadius * k;
         tmp.set(platterRect);
         tmp.offset(0, 18 * k);
         shadow.setColor(tone(0x1F000000, 0x52000000));
@@ -1223,7 +1319,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         outlinePaint.setShader(null);
     }
 
-    private final android.graphics.Rect customSrc = new android.graphics.Rect();
+    private final android.graphics.Rect customSrc = new android.graphics.Rect(), cardSrc = new android.graphics.Rect();
 
     /**
      * Logo at its "optical" size (all with the same amount of ink, plus each one's own adjustment, never past 80% × 62%
@@ -1307,19 +1403,71 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (!same) drawerDirty = true;
     }
 
+    /** The pinned apps (from reload() or a pin): the drawer's top row. */
+    private void setPinned(List<HomeApps.Item> list) {
+        String focusedKey = pinIndex < pinnedItems.size() ? pinnedItems.get(pinIndex).key : null;
+        pinnedItems = list;
+        pinnedSet.clear();
+        for (HomeApps.Item it : list) pinnedSet.add(it.pkg);
+        pinFocus = new Spring[list.size()];
+        pinRects = new RectF[list.size()];
+        int index = Math.min(pinIndex, Math.max(0, list.size() - 1));
+        for (int i = 0; i < list.size(); i++) {
+            pinFocus[i] = new Spring(0.3f, 0.82f, 0);
+            pinRects[i] = new RectF();
+            if (list.get(i).key.equals(focusedKey)) index = i;
+        }
+        pinIndex = index;
+        if (zone == Z_PINNED && list.isEmpty()) zone = drawerItems.isEmpty() ? Z_SHELF : Z_DRAWER;
+        aim(pinFocus, !sheetOpen && zone == Z_PINNED ? pinIndex : -1, true);
+        drawerScroll.target = drawerOpen && zone == Z_DRAWER && !list.isEmpty() ? 1 : 0;
+        aimPinScroll(false);
+        motionDirty = true;
+        layoutDrawer();
+        retarget(false);
+        gridDirty = true;
+    }
+
+    /** Pinned row offset: the inputs, shortcuts and cards sit this much lower when there are pinned apps. */
+    private float pinShift() {
+        return pinnedItems.isEmpty() ? 0 : PIN_ROW_SHIFT * k;
+    }
+
+    private void layoutPinned() {
+        float left = MARGIN * k, top = ROW_TOP * k, cw = PIN_W * k, ch = cw * 9 / 16, gap = PIN_GAP * k;
+        float x = left - pinScroll.value;
+        for (int i = 0; i < pinRects.length; i++) {
+            pinRects[i].set(x, top, x + cw, top + ch);
+            x += cw + gap;
+        }
+    }
+
+    /** Scrolls the pinned row so the focused card (and a peek of the next) stays on screen. */
+    private void aimPinScroll(boolean snap) {
+        float cw = PIN_W * k, gap = PIN_GAP * k, view = (CONTENT_R - MARGIN) * k;
+        float content = pinnedItems.size() * (cw + gap) - gap;
+        float max = Math.max(0, content - view);
+        float at = pinIndex * (cw + gap), target = pinScroll.target;
+        if (at - target < 0) target = at - (pinIndex > 0 ? cw * 0.4f : 0);
+        else if (at + cw - target > view) target = at + cw - view + (pinIndex < pinnedItems.size() - 1 ? cw * 0.4f : 0);
+        pinScroll.target = Math.max(0, Math.min(max, target));
+        if (snap) pinScroll.snap(pinScroll.target);
+    }
+
     private void layoutDrawer() {
+        layoutPinned();
         int n = drawerItems.size();
         float left = MARGIN * k, right = CONTENT_R * k;
         float gap = 18 * k, groupGap = 56 * k;
         int groups = drawerInputs > 0 && drawerInputs < n ? 2 : 1;
         float tw = Math.min(230 * k, (right - left - Math.max(0, n - groups) * gap - (groups - 1) * groupGap) / Math.max(1, n));
-        float x = left, top = ROW_TOP * k;
+        float x = left, top = ROW_TOP * k + pinShift();
         for (int i = 0; i < n; i++) {
             if (i == drawerInputs && i > 0) x += groupGap - gap;
             drawerRects[i].set(x, top, x + tw, top + ROW_H * k);
             x += tw + gap;
         }
-        float cardsTop = CARDS_TOP * k, split = left + (right - left) * 0.585f;
+        float cardsTop = CARDS_TOP * k + pinShift(), split = left + (right - left) * 0.585f;
         boolean wx = Prefs.weather(), qt = Prefs.quotes() && HomeData.active().length > 0;
         // A card that is off gives its room to the other one.
         weatherCard.set(left, cardsTop, qt ? split - 16 * k : right, cardsTop + CARDS_H * k);
@@ -1328,21 +1476,37 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     }
 
     private void openDrawer() {
-        if (drawerItems.isEmpty()) return;
+        if (drawerItems.isEmpty() && pinnedItems.isEmpty()) return;
         drawerOpen = true;
         drawer.target = 1;
-        zone = Z_DRAWER;
-        drawerIndex = shelf.isEmpty() ? 0 : nearest(drawerRects, tileRects[shelfIndex].centerX());
-        for (int i = 0; i < drawerFocus.length; i++) drawerFocus[i].snap(i == drawerIndex ? 1 : 0);
+        float x = shelf.isEmpty() ? 0 : tileRects[shelfIndex].centerX();
+        if (!pinnedItems.isEmpty()) {
+            // Pinned apps first: they are the drawer's top row.
+            zone = Z_PINNED;
+            pinScroll.snap(0);
+            layoutPinned();
+            pinIndex = nearest(pinRects, x);
+            aimPinScroll(true);
+            for (int i = 0; i < pinFocus.length; i++) pinFocus[i].snap(i == pinIndex ? 1 : 0);
+        } else {
+            zone = Z_DRAWER;
+            drawerIndex = shelf.isEmpty() ? 0 : nearest(drawerRects, x);
+            for (int i = 0; i < drawerFocus.length; i++) drawerFocus[i].snap(i == drawerIndex ? 1 : 0);
+        }
+        drawerScroll.target = 0;
         drawerDirty = true;
     }
 
     private void closeDrawer() {
+        RectF from = zone == Z_PINNED && pinIndex < pinRects.length ? pinRects[pinIndex]
+                : drawerIndex < drawerRects.length ? drawerRects[drawerIndex] : null;
         drawerOpen = false;
         drawer.target = 0;
+        drawerScroll.target = 0;
         zone = Z_SHELF;
         for (Spring f : drawerFocus) f.snap(0);   // the drawer goes away: its focus doesn't need to animate
-        if (!shelf.isEmpty() && drawerIndex < drawerRects.length) shelfIndex = nearest(tileRects, drawerRects[drawerIndex].centerX());
+        for (Spring f : pinFocus) f.snap(0);
+        if (!shelf.isEmpty() && from != null) shelfIndex = nearest(tileRects, from.centerX());
     }
 
     /** Color for the drawer's text and symbols: dark by day, white at night. */
@@ -1378,7 +1542,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         hourPaint.setColor(tone(L_DIM, 0xADFFFFFF));
         hourTemp.setColor(drawerInk(0.95f));
         pricePaint.setColor(drawerInk(0.95f));
-        float titleBase = ROW_TITLE * k;
+        float titleBase = ROW_TITLE * k + pinShift();
+        if (!pinnedItems.isEmpty()) drawPinnedRow(c);
         if (drawerInputs > 0) c.drawText(Ui.tr("Entradas", "Inputs"), drawerRects[0].left + 4 * k, titleBase, rowTitle);
         if (drawerInputs < drawerItems.size()) c.drawText(Ui.tr("Atalhos", "Shortcuts"), drawerRects[drawerInputs].left + 4 * k, titleBase, rowTitle);
         int top = -1;
@@ -1387,6 +1552,35 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (top >= 0) drawDrawerTile(c, top);
         if (Prefs.weather()) drawWeatherCard(c, weatherCard);
         if (Prefs.quotes() && HomeData.active().length > 0) drawQuotesCard(c, quotesCard);
+    }
+
+    /** The pinned apps: 16:9 cards like All Apps, the focused one lifted with its name under it. */
+    private void drawPinnedRow(Canvas c) {
+        layoutPinned();
+        c.drawText(Ui.tr("Fixados", "Pinned"), MARGIN * k + 4 * k, ROW_TITLE * k, rowTitle);
+        c.save();
+        c.clipRect(0, ROW_TITLE * k - 40 * k, w, ROW_TOP * k + pinShift() - 30 * k);
+        int top = -1;
+        for (int i = 0; i < pinRects.length; i++) if (pinFocus[i].value > 0.02f && (top < 0 || pinFocus[i].value > pinFocus[top].value)) top = i;
+        for (int pass = 0; pass < 2; pass++) {
+            for (int i = 0; i < pinRects.length; i++) {
+                if ((pass == 0) == (i == top)) continue;
+                RectF r = pinRects[i];
+                if (r.right < -60 * k || r.left > w + 60 * k) continue;
+                float f = pinFocus[i].value;
+                drawCard(c, pinnedItems.get(i).tile, r, 18 * k, f, 0.1f);
+                float fc = Ui.clamp(f);
+                if (fc > 0.01f) {
+                    drawerLabel.setColor(Ui.alpha(drawerInk(1), fc));
+                    drawerLabel.setTextSize(22 * k);
+                    String label = TextUtils.ellipsize(pinnedItems.get(i).label, new TextPaint(drawerLabel), r.width() + 40 * k,
+                            TextUtils.TruncateAt.END).toString();
+                    c.drawText(label, r.centerX(), r.bottom + (34 + 8 * fc) * k, drawerLabel);
+                    drawerLabel.setTextSize(23 * k);
+                }
+            }
+        }
+        c.restore();
     }
 
     /** Square drawer button: symbol and name; an input with no device is dimmed. Focused: white, with dark text. */
@@ -1499,6 +1693,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         boolean tilesChanged = aim(tileFocus, !sheetOpen && zone == Z_SHELF ? shelfIndex : -1, snap);
         boolean statusChanged = aim(statusFocus, !sheetOpen && zone == Z_STATUS ? statusIndex : -1, snap);
         boolean drawerChanged = aim(drawerFocus, !sheetOpen && zone == Z_DRAWER ? drawerIndex : -1, snap);
+        drawerChanged |= aim(pinFocus, !sheetOpen && zone == Z_PINNED ? pinIndex : -1, snap);
         boolean heroChanged = heroFocus.target != (!sheetOpen && zone == Z_HERO ? 1 : 0);
         heroFocus.target = !sheetOpen && zone == Z_HERO ? 1 : 0;
         if (snap) heroFocus.snap(heroFocus.target);
@@ -1509,6 +1704,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         statusDirty |= snap || statusChanged;
         heroDirty |= snap || heroChanged;
         drawerDirty |= snap || drawerChanged;
+        if (zone == Z_CARDS && !sheetOpen && cardIndex != wideIndex && cardIndex < cards.size()) setWide(cardIndex, snap);
+        updateTrailer();
         spoken.focusMoved();
     }
 
@@ -1572,6 +1769,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         c.drawColor(0xA8000000);
         float shift = scroll.value * GRID_ROW * k;
         c.drawText(Ui.tr("Todos os Apps", "All Apps"), w / 2f, 124 * k - shift, sheetTitle);
+        gridLabel.setColor(0x80FFFFFF);
+        c.drawText(Ui.tr("Segure OK para fixar um app abaixo da barra", "Hold OK to pin an app below the dock"),
+                w / 2f, 164 * k - shift, gridLabel);
         int n = others.size();
         if (gridLabels == null || gridLabels.length != n) {
             gridLabels = new String[n];
@@ -1591,6 +1791,16 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             float f = gridFocus[i].value;
             drawCard(c, others.get(i).tile, base, GRID_RADIUS * k, f, 0.08f);
             if (sheetOpen && i == gridIndex) focusedCell.set(cell);
+            if (others.get(i).pkg != null && pinnedSet.contains(others.get(i).pkg)) {
+                // Pinned: a small white badge in the card's corner.
+                float br = 17 * k, bx = cell.right - br - 10 * k, by = cell.top + br + 10 * k;
+                shadow.setColor(0x59000000);
+                c.drawCircle(bx, by + 3 * k, br, shadow);
+                fill.setShader(null);
+                fill.setColor(0xF2FFFFFF);
+                c.drawCircle(bx, by, br, fill);
+                Symbols.draw(getContext(), c, "check", bx, by, 22 * k, INK);
+            }
             gridLabel.setColor(blend(0x99FFFFFF, 0xFFFFFFFF, Ui.clamp(f)));
             c.drawText(gridLabels[i], base.centerX(), base.bottom + (40 + 6 * f) * k, gridLabel);
         }
@@ -1719,8 +1929,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             final List<HomeApps.Item> st = statusList(c);
             final List<HomeApps.Item> d = drawerList(c);
             final List<HomeApps.Item> o = HomeApps.others(c);
+            final List<HomeApps.Item> pins = HomeApps.pinned(c);
             handler.post(() -> {
                 setShelf(s);
+                setPinned(pins);
                 setStatusItems(st);
                 setDrawerItems(d);
                 if (!sheetOpen) setOthers(o);
@@ -1752,6 +1964,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 // app opens nothing.
                 if (down) {
                     if (e.getRepeatCount() == 0) okDown = true;
+                    else if (okDown && e.getRepeatCount() == 1) {
+                        // Held: pin (All Apps) or unpin (the drawer's pinned row) instead of opening on release.
+                        if (longPress()) okDown = false;
+                    }
                 } else {
                     if (okDown && !e.isCanceled() && spoken.keyClick()) activate();
                     okDown = false;
@@ -1770,10 +1986,37 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
     }
 
+    /** OK held: in All Apps, pins or unpins the focused app; on the pinned row, unpins it. True if it did something. */
+    private boolean longPress() {
+        HomeApps.Item it;
+        if (sheetOpen) {
+            if (others.isEmpty()) return false;
+            it = others.get(gridIndex);
+        } else if (zone == Z_PINNED && !pinnedItems.isEmpty()) {
+            it = pinnedItems.get(pinIndex);
+        } else {
+            return false;
+        }
+        if (it.kind != HomeApps.APP || it.pkg == null) return false;
+        boolean pinned = Prefs.togglePinned(it.pkg);
+        if (pinned) pinnedSet.add(it.pkg);
+        else pinnedSet.remove(it.pkg);
+        click.open();
+        showToast(pinned ? Ui.tr("Fixado: ", "Pinned: ") + it.label + Ui.tr(" (abaixo da barra)", " (below the dock)")
+                : Ui.tr("Desafixado: ", "Unpinned: ") + it.label);
+        gridDirty = true;
+        final Context c = getContext().getApplicationContext();
+        LOADER.execute(() -> {
+            final List<HomeApps.Item> pins = HomeApps.pinned(c);
+            handler.post(() -> setPinned(pins));
+        });
+        return true;
+    }
+
     private void back() {
         if (sheetOpen) {
             closeSheet();
-        } else if (zone == Z_DRAWER) {
+        } else if (zone == Z_DRAWER || zone == Z_PINNED) {
             closeDrawer();
             retarget(false);
         } else if (zone != Z_SHELF) {
@@ -1807,7 +2050,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                         return;
                     }
                 } else {
-                    if (drawerItems.isEmpty()) return;
+                    if (drawerItems.isEmpty() && pinnedItems.isEmpty()) return;
                     openDrawer();
                 }
                 break;
@@ -1838,13 +2081,36 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                     return;
                 }
                 break;
+            case Z_PINNED:
+                if (dx != 0) {
+                    int next = Math.max(0, Math.min(pinnedItems.size() - 1, pinIndex + dx));
+                    if (next == pinIndex) return;
+                    pinIndex = next;
+                    aimPinScroll(false);
+                } else if (dy < 0) {
+                    closeDrawer();
+                } else {
+                    if (drawerItems.isEmpty()) return;
+                    zone = Z_DRAWER;
+                    drawerIndex = nearest(drawerRects, pinRects[pinIndex].centerX());
+                    drawerScroll.target = 1;
+                }
+                break;
             default:
                 if (dx != 0) {
                     int next = Math.max(0, Math.min(drawerItems.size() - 1, drawerIndex + dx));
                     if (next == drawerIndex) return;
                     drawerIndex = next;
                 } else if (dy < 0) {
-                    closeDrawer();
+                    if (!pinnedItems.isEmpty()) {
+                        zone = Z_PINNED;
+                        layoutPinned();
+                        pinIndex = nearest(pinRects, drawerRects[drawerIndex].centerX());
+                        aimPinScroll(false);
+                        drawerScroll.target = 0;
+                    } else {
+                        closeDrawer();
+                    }
                 } else {
                     return;
                 }
@@ -1907,6 +2173,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             if (drawerItems.isEmpty()) return;
             it = drawerItems.get(drawerIndex);
             r = drawerRects[drawerIndex];
+        } else if (zone == Z_PINNED) {
+            if (pinnedItems.isEmpty()) return;
+            it = pinnedItems.get(pinIndex);
+            r = new RectF(pinRects[pinIndex]);
+            r.offset(0, drawerLayer.getTranslationY());
         } else if (zone == Z_TOP) {
             if (topIndex < 3) {
                 selectTab(topIndex);
@@ -1931,6 +2202,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
         if (it.kind == HomeApps.INPUTS) {
             openDrawer();
+            zone = Z_DRAWER;
+            drawerScroll.target = pinnedItems.isEmpty() ? 0 : 1;
             for (int i = 0; i < drawerItems.size(); i++) {
                 if (drawerItems.get(i).kind == HomeApps.INPUT) {
                     drawerIndex = i;
@@ -1965,6 +2238,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         for (int i = 0; i < 3 + lightButtons.size(); i++) out.add(a11yId(Z_TOP, i));
         for (int i = 0; i < Math.min(3, cards.size()); i++) out.add(a11yId(Z_CARDS, i));
         for (int i = 0; i < shelf.size(); i++) out.add(a11yId(Z_SHELF, i));
+        for (int i = 0; i < pinnedItems.size(); i++) out.add(a11yId(Z_PINNED, i));
         for (int i = 0; i < drawerItems.size(); i++) out.add(a11yId(Z_DRAWER, i));
     }
 
@@ -1980,6 +2254,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             case Z_CARDS: return i < cards.size() ? pickText(cards.get(i)) : "";
             case Z_SHELF: return label(shelf, i);
             case Z_DRAWER: return label(drawerItems, i);
+            case Z_PINNED: return label(pinnedItems, i) + Ui.tr(", fixado", ", pinned");
             default: return "";
         }
     }
@@ -2019,7 +2294,12 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             case Z_DRAWER:
                 if (i >= drawerRects.length) return false;
                 a11yRect.set(drawerRects[i]);
-                dy = drawerOpen ? 0 : h;
+                dy = drawerOpen ? drawerLayer.getTranslationY() : h;
+                break;
+            case Z_PINNED:
+                if (i >= pinRects.length) return false;
+                a11yRect.set(pinRects[i]);
+                dy = drawerOpen ? drawerLayer.getTranslationY() : h;
                 break;
             default:
                 return false;
@@ -2039,6 +2319,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             case Z_CARDS: return cardIndex < cards.size() ? a11yId(Z_CARDS, cardIndex) : -1;
             case Z_SHELF: return shelf.isEmpty() ? -1 : a11yId(Z_SHELF, shelfIndex);
             case Z_DRAWER: return drawerItems.isEmpty() ? -1 : a11yId(Z_DRAWER, drawerIndex);
+            case Z_PINNED: return pinnedItems.isEmpty() ? -1 : a11yId(Z_PINNED, pinIndex);
             default: return -1;
         }
     }
@@ -2060,6 +2341,14 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 if (i >= drawerItems.size()) return;
                 if (!drawerOpen) openDrawer();
                 drawerIndex = i;
+                drawerScroll.target = pinnedItems.isEmpty() ? 0 : 1;
+                break;
+            case Z_PINNED:
+                if (i >= pinnedItems.size()) return;
+                if (!drawerOpen) openDrawer();
+                pinIndex = i;
+                aimPinScroll(false);
+                drawerScroll.target = 0;
                 break;
             case Z_TOP:
                 if (i >= 3 + lightButtons.size()) return;
@@ -2116,12 +2405,81 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             topRects[3 + i].set(right - b, cy - b / 2, right, cy + b / 2);
             right -= b + L_BUTTON_GAP * k;
         }
+        layoutCards();
+        heroDirty = statusDirty = true;
+    }
+
+    /**
+     * The three cards share one row of fixed width: each is as wide as a tall card plus its share of the extra width,
+     * the share being its "wide" weight normalized over the three (so while two cards trade shapes the row never
+     * changes length and the third card glides sideways to make room).
+     */
+    private void layoutCards() {
         float top = L_CARDS_TOP * k, ch = L_CARD_H * k, g = L_CARD_GAP * k, left = MARGIN * k, tall = L_TALL_W * k;
         float wide = (CONTENT_R - MARGIN) * k - 2 * tall - 2 * g;
-        cardRects[0].set(left, top, left + wide, top + ch);
-        cardRects[1].set(cardRects[0].right + g, top, cardRects[0].right + g + tall, top + ch);
-        cardRects[2].set(cardRects[1].right + g, top, cardRects[1].right + g + tall, top + ch);
-        heroDirty = statusDirty = true;
+        float sum = 0;
+        for (Spring sp : cardWide) sum += Math.max(0, sp.value);
+        float x = left;
+        for (int i = 0; i < 3; i++) {
+            float share = sum < 0.001f ? (i == wideIndex ? 1 : 0) : Math.max(0, cardWide[i].value) / sum;
+            float cw = tall + (wide - tall) * share;
+            cardRects[i].set(x, top, x + cw, top + ch);
+            x += cw + g;
+        }
+    }
+
+    /** Makes card `i` the wide one: the shapes spring across, the background follows a moment later. */
+    private void setWide(int i, boolean snap) {
+        wideIndex = i;
+        for (int j = 0; j < 3; j++) {
+            cardWide[j].target = j == i ? 1 : 0;
+            if (snap) cardWide[j].snap(cardWide[j].target);
+        }
+        if (snap) layoutCards();
+        handler.removeCallbacks(followWide);
+        // Wait until the move settles (and the user stops scrolling): decoding a new backdrop mid-animation costs frames.
+        handler.postDelayed(followWide, snap ? 0 : 450);
+        heroDirty = true;
+    }
+
+    /** The background shows the wide card's photo. */
+    private void followWideBackdrop() {
+        if (wideIndex >= cards.size()) return;
+        Backdrop b = recs.backdrop(cards.get(wideIndex));
+        if (b != null) showBackdrop(b);
+    }
+
+    // MARK: - Trailer preview on the wide card
+
+    /** Plays, keeps or stops the trailer to match the focus (called on every focus change). */
+    private void updateTrailer() {
+        if (trailer == null) return;
+        Recs.Pick p = wideIndex < cards.size() ? cards.get(wideIndex) : null;
+        boolean want = running && !sheetOpen && !drawerOpen && zone == Z_CARDS && cardIndex == wideIndex && p != null
+                && p.trailer != null && !p.trailer.equals(failedTrailer) && !"off".equals(Prefs.trailers());
+        if (want && p.trailer.equals(trailer.key())) return;   // already playing this one
+        handler.removeCallbacks(startTrailer);
+        if (trailer.active()) trailer.stop();
+        if (want) handler.postDelayed(startTrailer, 3000);   // like Apple TV: a few seconds on the card first
+    }
+
+    private void startTrailer() {
+        Recs.Pick p = wideIndex < cards.size() ? cards.get(wideIndex) : null;
+        if (p == null || p.trailer == null || zone != Z_CARDS || cardIndex != wideIndex || sheetOpen || drawerOpen) return;
+        // Where the focused wide card ends up (focus: 5% bigger, 6 px higher), in screen pixels.
+        RectF base = cardRects[wideIndex];
+        float tall = L_TALL_W * k, g = L_CARD_GAP * k;
+        float fullW = (CONTENT_R - MARGIN) * k - 2 * tall - 2 * g;
+        float left = MARGIN * k;
+        for (int j = 0; j < wideIndex; j++) left += tall + g;
+        float bw = fullW, bh = base.height(), s = 1.05f;
+        float cx = left + bw / 2, cy = base.centerY() - 6 * k;
+        RectF r = new RectF(cx - bw * s / 2, cy - bh * s / 2, cx + bw * s / 2, cy + bh * s / 2);
+        trailer.play(p.trailer, r, 18 * k * s, "muted".equals(Prefs.trailers()));
+    }
+
+    @Override public void trailerFailed(String key) {
+        failedTrailer = key;   // embedding disabled for this video: don't retry it until the picks change
     }
 
     /** The three cards of the current tab (Explore, Movies, Shows) and the background taken from the first one. */
@@ -2130,15 +2488,19 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (!samePicks(list, cards)) {
             cards = list;
             cardIndex = Math.min(cardIndex, Math.max(0, list.size() - 1));
+            int wide = zone == Z_CARDS ? cardIndex : 0;
+            if (wide != wideIndex) setWide(wide, zone != Z_CARDS);
+            failedTrailer = null;
             if (zone == Z_CARDS && list.isEmpty()) {
                 zone = Z_SHELF;
                 retarget(false);
             }
         }
         for (Recs.Pick p : recs.wanted()) recs.backdrop(p);   // all three tabs preloaded: switching tabs is instant
-        Backdrop b = cards.isEmpty() ? null : recs.backdrop(cards.get(0));
+        Backdrop b = cards.isEmpty() ? null : recs.backdrop(cards.get(Math.min(wideIndex, cards.size() - 1)));
         if (cards.isEmpty() || b != null) showBackdrop(b);
         heroDirty = true;
+        updateTrailer();
         spoken.focusMoved();    // new picks under the focused card
     }
 
@@ -2248,9 +2610,14 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         c.save();
         c.clipPath(clip);
         Backdrop b = p == null ? null : recs.backdrop(p);
-        Bitmap img = b == null ? null : (i == 0 ? b.wide : b.tall);
+        Bitmap img = b == null ? null : b.wide;
         if (img != null) {
-            c.drawBitmap(img, null, cell, bitmapPaint);
+            // Center-cropped to whatever shape the card has right now (tall, wide or in between).
+            float iw = img.getWidth(), ih = img.getHeight();
+            float sc = Math.max(cell.width() / iw, cell.height() / ih);
+            float sw = cell.width() / sc, sh = cell.height() / sc;
+            cardSrc.set(Math.round((iw - sw) / 2), Math.round((ih - sh) / 2), Math.round((iw + sw) / 2), Math.round((ih + sh) / 2));
+            c.drawBitmap(img, cardSrc, cell, bitmapPaint);
         } else {
             fill.setShader(null);
             fill.setColor(tone(0xFFDADADF, 0xFF2C2C2E));
@@ -2270,9 +2637,13 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (p == null) return;
         TextPaint tp = new TextPaint(lCardTitle);
         c.drawText(TextUtils.ellipsize(p.title, tp, bw, TextUtils.TruncateAt.END).toString(), base.left, base.bottom + 46 * k, lCardTitle);
-        if (i == 0 && p.meta != null && !p.meta.isEmpty()) {
+        float wv = Ui.clamp(cardWide[i].value);
+        if (wv > 0.02f && p.meta != null && !p.meta.isEmpty()) {
+            // The details belong to the wide card: they fade in as it widens (and out as it narrows).
             TextPaint mp = new TextPaint(lCardMeta);
-            c.drawText(TextUtils.ellipsize(p.meta, mp, bw, TextUtils.TruncateAt.END).toString(), base.left, base.bottom + 80 * k, lCardMeta);
+            int alpha = lCardMeta.getAlpha();
+            mp.setAlpha(Math.round(alpha * smoothstep(0.35f, 1f, wv)));
+            c.drawText(TextUtils.ellipsize(p.meta, mp, bw, TextUtils.TruncateAt.END).toString(), base.left, base.bottom + 80 * k, mp);
         }
     }
 

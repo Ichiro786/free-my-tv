@@ -44,6 +44,7 @@ final class Recs {
         int id;
         String kind;            // "movie" or "tv"
         String title, backdrop, meta = "", app, pkg;
+        String trailer;         // YouTube key of the official trailer (or teaser), null if none
         boolean detailed;
     }
 
@@ -53,7 +54,7 @@ final class Recs {
     private static final String IMAGES = "https://image.tmdb.org/t/p/original";
     private static final long LIST_EVERY = 6 * 3600_000L;
     /** Bump when what is saved for each title changes (the saved list is discarded and fetched again). */
-    private static final int CACHE_VERSION = 3;
+    private static final int CACHE_VERSION = 4;
     private static final int MANHA = 0, TARDE = 1, NOITE = 2;
     static final String[] PERIOD_LABEL = {"PARA ESTA MANHÃ", "PARA ESTA TARDE", "PARA ESTA NOITE"};
     static final String[] PERIOD_LABEL_EN = {"THIS MORNING", "THIS AFTERNOON", "TONIGHT"};
@@ -452,7 +453,9 @@ final class Recs {
     /** Genre, runtime (or seasons) and the service it's on, among the ones the TV has. */
     private void fetchDetails(Pick p) throws Exception {
         JSONObject o = get("/" + p.kind + "/" + p.id
-                + "?language=" + lang() + "&append_to_response=watch/providers,images&include_image_language=null," + Ui.language + ",en");
+                + "?language=" + lang() + "&append_to_response=watch/providers,images,videos&include_image_language=null," + Ui.language + ",en"
+                + "&include_video_language=" + Ui.language + ",en,null");
+        p.trailer = bestTrailer(o.optJSONObject("videos"));
         String best = bestBackdrop(o.optJSONObject("images"));
         if (best != null) p.backdrop = best;
         List<String> parts = new ArrayList<>();
@@ -484,6 +487,34 @@ final class Recs {
         if (p.app != null) parts.add(SERVICE_NAME.get(p.app));
         p.meta = String.join(" · ", parts);
         p.detailed = true;
+    }
+
+    /**
+     * The video to preview: a YouTube trailer before a teaser before anything else, official before fan-made, in the
+     * TV's language before English, and the most recent on a tie.
+     */
+    private static String bestTrailer(JSONObject videos) {
+        JSONArray list = videos == null ? null : videos.optJSONArray("results");
+        String best = null;
+        double bestScore = -1;
+        for (int i = 0; list != null && i < list.length(); i++) {
+            JSONObject v = list.optJSONObject(i);
+            if (v == null || !"YouTube".equalsIgnoreCase(v.optString("site")) || v.optString("key", "").isEmpty()) continue;
+            String type = v.optString("type");
+            double score = ("Trailer".equals(type) ? 4e6 : "Teaser".equals(type) ? 3e6 : "Clip".equals(type) ? 1e6 : 0)
+                    + (v.optBoolean("official") ? 5e5 : 0)
+                    + (Ui.language.equalsIgnoreCase(v.optString("iso_639_1")) ? 2e5 : 0);
+            String date = v.optString("published_at", "");
+            try {
+                if (date.length() >= 7) score += Integer.parseInt(date.substring(0, 4)) * 12 + Integer.parseInt(date.substring(5, 7));
+            } catch (NumberFormatException ignored) {
+            }
+            if (score > bestScore) {
+                bestScore = score;
+                best = v.optString("key");
+            }
+        }
+        return best;
     }
 
     /** TV genres that TMDB returns in English even in pt-BR. */
@@ -640,7 +671,7 @@ final class Recs {
             for (Pick p : picks) {
                 a.put(new JSONObject().put("id", p.id).put("kind", p.kind).put("title", p.title).put("backdrop", p.backdrop)
                         .put("meta", p.meta).put("app", p.app == null ? "" : p.app).put("pkg", p.pkg == null ? "" : p.pkg)
-                        .put("detailed", p.detailed));
+                        .put("detailed", p.detailed).put("trailer", p.trailer == null ? "" : p.trailer));
             }
             cache.edit().putString("picks", a.toString()).putInt("period", period).putLong("listAt", listAt)
                     .putString("language", listLanguage)
@@ -663,6 +694,7 @@ final class Recs {
             p.app = o.optString("app").isEmpty() ? null : o.optString("app");
             p.pkg = o.optString("pkg").isEmpty() ? null : o.optString("pkg");
             p.detailed = o.optBoolean("detailed");
+            p.trailer = o.optString("trailer").isEmpty() ? null : o.optString("trailer");
             out.add(p);
         }
         return out;

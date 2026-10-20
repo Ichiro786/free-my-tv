@@ -120,7 +120,7 @@ public class SettingsActivity extends Activity {
         private final SettingsActivity activity;
         private final Scene scene = new Scene();
         private final Handler handler = new Handler(Looper.getMainLooper());
-        private final Spring[] pop = new Spring[16];
+        private final Spring[] pop = new Spring[24];
         private final List<String> appPkgs = new ArrayList<>(), appLabels = new ArrayList<>();
         // The list picker (the app of a remote button): what it shows, which one is in use, where we are.
         private final List<String> pickLabels = new ArrayList<>();
@@ -239,7 +239,12 @@ public class SettingsActivity extends Activity {
             }
         }
 
-        private float rowH() { return screen == HOME_SETTINGS ? SET_ROW_H : LIST_ROW_H; }
+        /** Home Settings rows shrink a little when there are many, so the whole list stays on screen. */
+        private float rowH() {
+            if (screen != HOME_SETTINGS) return LIST_ROW_H;
+            int n = Math.max(1, settingLabels().length);
+            return Math.min(SET_ROW_H, (1010 - LIST_TOP - 20) / n - SET_ROW_GAP);
+        }
         private float rowGap() { return screen == HOME_SETTINGS ? SET_ROW_GAP : LIST_ROW_GAP; }
 
         private RectF rowBox(int row) {
@@ -625,52 +630,107 @@ public class SettingsActivity extends Activity {
         // MARK: - Home Settings and Remote Buttons
 
         private static final String[] LANGUAGES = {"auto", "pt", "en", "es"}, UNITS = {"auto", "C", "F"}, THEMES = {"auto", "light", "dark"};
-        /** Home Settings: language, temperature, theme, weather, quotes, then one row per coin. */
-        private static final int COIN_ROWS = 10;
 
         private boolean dollar() {
             return "BRL".equalsIgnoreCase(Config.CURRENCY.trim());
         }
 
+        // Home Settings rows by id (the list is built each time: "Grow amount" only shows with the Grow focus).
+        private static final int R_LANGUAGE = 0, R_TEMP = 1, R_THEME = 2, R_WEATHER = 3, R_QUOTES = 4, R_TMDB = 5,
+                R_DOCK = 6, R_ICON = 7, R_RADIUS = 8, R_FOCUS = 9, R_GROW = 10, R_OPENING = 11, R_TRAILERS = 12, R_COIN = 100;
+
+        private List<Integer> settingRows() {
+            List<Integer> r = new ArrayList<>();
+            for (int id : new int[] {R_LANGUAGE, R_TEMP, R_THEME, R_WEATHER, R_QUOTES, R_TMDB, R_DOCK, R_ICON, R_RADIUS, R_FOCUS}) r.add(id);
+            if ("grow".equals(Prefs.focusStyle())) r.add(R_GROW);
+            r.add(R_OPENING);
+            r.add(R_TRAILERS);
+            int coins = dollar() ? 4 : 3;
+            for (int i = 0; i < coins; i++) r.add(R_COIN + i);
+            return r;
+        }
+
+        private int rowId(int index) {
+            List<Integer> r = settingRows();
+            return index >= 0 && index < r.size() ? r.get(index) : -1;
+        }
+
         private String[] settingLabels() {
-            List<String> l = new ArrayList<>();
-            l.add(Ui.tr("Idioma", "Language"));
-            l.add(Ui.tr("Temperatura", "Temperature"));
-            l.add(Ui.tr("Tema", "Theme"));
-            l.add(Ui.tr("Widget do clima", "Weather widget"));
-            l.add(Ui.tr("Widget de cotações", "Quotes widget"));
-            l.add(Ui.tr("Chave do TMDB", "TMDB key"));
-            l.add(Ui.tr("Tamanho dos ícones", "App icon size"));
-            l.add(Ui.tr("Cantos dos ícones", "Icon corner radius"));
-            l.add(Ui.tr("Efeito de foco", "Focus effect"));
-            l.add(Ui.tr("Abrir apps", "App opening"));
-            l.add("Bitcoin");
-            l.add("Ethereum");
-            l.add("Solana");
-            if (dollar()) l.add(Ui.tr("Dólar", "Dollar"));
-            return l.toArray(new String[0]);
+            List<Integer> rows = settingRows();
+            String[] l = new String[rows.size()];
+            for (int i = 0; i < l.length; i++) {
+                int id = rows.get(i);
+                switch (id) {
+                    case R_LANGUAGE: l[i] = Ui.tr("Idioma", "Language"); break;
+                    case R_TEMP: l[i] = Ui.tr("Temperatura", "Temperature"); break;
+                    case R_THEME: l[i] = Ui.tr("Tema", "Theme"); break;
+                    case R_WEATHER: l[i] = Ui.tr("Widget do clima", "Weather widget"); break;
+                    case R_QUOTES: l[i] = Ui.tr("Widget de cotações", "Quotes widget"); break;
+                    case R_TMDB: l[i] = Ui.tr("Chave do TMDB", "TMDB key"); break;
+                    case R_DOCK: l[i] = Ui.tr("Tamanho da barra", "Dock size"); break;
+                    case R_ICON: l[i] = Ui.tr("Tamanho dos ícones", "App icon size"); break;
+                    case R_RADIUS: l[i] = Ui.tr("Cantos dos ícones", "Icon corner radius"); break;
+                    case R_FOCUS: l[i] = Ui.tr("Efeito de foco", "Focus effect"); break;
+                    case R_GROW: l[i] = Ui.tr("   Quanto aumentar", "   Grow amount"); break;
+                    case R_OPENING: l[i] = Ui.tr("Abrir apps", "App opening"); break;
+                    case R_TRAILERS: l[i] = Ui.tr("Trailers no Para você", "Trailers on For You"); break;
+                    default: {
+                        int c = id - R_COIN;
+                        l[i] = c == 0 ? "Bitcoin" : c == 1 ? "Ethereum" : c == 2 ? "Solana" : Ui.tr("Dólar", "Dollar");
+                    }
+                }
+            }
+            return l;
         }
 
         private String[] settingValues() {
-            String[] labels = settingLabels();
-            String[] v = new String[labels.length];
-            String lang = Prefs.language();
-            v[0] = lang.equals("pt") ? "Português" : lang.equals("en") ? "English" : lang.equals("es") ? "Español" : Ui.tr("Automático", "Automatic");
-            String unit = Prefs.temperature();
-            v[1] = unit.equals("C") ? "°C" : unit.equals("F") ? "°F" : Ui.tr("Automática", "Automatic");
-            String theme = Prefs.theme();
-            v[2] = theme.equals("light") ? Ui.tr("Claro", "Light") : theme.equals("dark") ? Ui.tr("Escuro", "Dark") : Ui.tr("Automático", "Automatic");
-            v[3] = onOff(Prefs.weather());
-            v[4] = onOff(Prefs.quotes());
-            String key = Prefs.tmdbKey();
-            v[5] = key.isEmpty() ? Ui.tr("Nenhuma", "None") : "••••" + key.substring(Math.max(0, key.length() - 4));
-            v[6] = Prefs.tileSize() + "%";
-            v[7] = Prefs.tileRadius() == 0 ? Ui.tr("Retos", "Square") : Prefs.tileRadius() + " px";
-            v[8] = "grow".equals(Prefs.focusStyle()) ? Ui.tr("Aumentar", "Grow") : Ui.tr("Contorno brilhante", "Shimmer outline");
-            String la = Prefs.launchAnim();
-            v[9] = la.equals("zoom") ? Ui.tr("Zoom do sistema", "System zoom") : la.equals("off") ? Ui.tr("Instantâneo", "Instant") : Ui.tr("Rápido", "Quick fade");
-            // No quotes widget, nowhere to show prices: the coins read as off (and stay locked) until it is back on.
-            for (int i = COIN_ROWS; i < v.length; i++) v[i] = onOff(Prefs.quotes() && Prefs.coin(i - COIN_ROWS));
+            List<Integer> rows = settingRows();
+            String[] v = new String[rows.size()];
+            for (int i = 0; i < v.length; i++) {
+                int id = rows.get(i);
+                switch (id) {
+                    case R_LANGUAGE: {
+                        String lang = Prefs.language();
+                        v[i] = lang.equals("pt") ? "Português" : lang.equals("en") ? "English" : lang.equals("es") ? "Español" : Ui.tr("Automático", "Automatic");
+                        break;
+                    }
+                    case R_TEMP: {
+                        String unit = Prefs.temperature();
+                        v[i] = unit.equals("C") ? "°C" : unit.equals("F") ? "°F" : Ui.tr("Automática", "Automatic");
+                        break;
+                    }
+                    case R_THEME: {
+                        String theme = Prefs.theme();
+                        v[i] = theme.equals("light") ? Ui.tr("Claro", "Light") : theme.equals("dark") ? Ui.tr("Escuro", "Dark") : Ui.tr("Automático", "Automatic");
+                        break;
+                    }
+                    case R_WEATHER: v[i] = onOff(Prefs.weather()); break;
+                    case R_QUOTES: v[i] = onOff(Prefs.quotes()); break;
+                    case R_TMDB: {
+                        String key = Prefs.tmdbKey();
+                        v[i] = key.isEmpty() ? Ui.tr("Nenhuma", "None") : "••••" + key.substring(Math.max(0, key.length() - 4));
+                        break;
+                    }
+                    case R_DOCK: v[i] = Prefs.dockSize() == 0 ? Ui.tr("Automático", "Auto") : Prefs.dockSize() + "%"; break;
+                    case R_ICON: v[i] = Prefs.tileSize() + "%"; break;
+                    case R_RADIUS: v[i] = Prefs.tileRadius() == 0 ? Ui.tr("Retos", "Square") : Prefs.tileRadius() + " px"; break;
+                    case R_FOCUS: v[i] = "grow".equals(Prefs.focusStyle()) ? Ui.tr("Aumentar", "Grow") : Ui.tr("Contorno brilhante", "Shimmer outline"); break;
+                    case R_GROW: v[i] = Prefs.growAmount() == 0 ? Ui.tr("Automático", "Auto") : "+" + Prefs.growAmount() + "%"; break;
+                    case R_OPENING: {
+                        String la = Prefs.launchAnim();
+                        v[i] = la.equals("zoom") ? Ui.tr("Zoom do sistema", "System zoom") : la.equals("off") ? Ui.tr("Instantâneo", "Instant") : Ui.tr("Rápido", "Quick fade");
+                        break;
+                    }
+                    case R_TRAILERS: {
+                        String t = Prefs.trailers();
+                        v[i] = t.equals("off") ? Ui.tr("Desligado", "Off") : t.equals("muted") ? Ui.tr("Sem som", "Muted") : Ui.tr("Com som", "With sound");
+                        break;
+                    }
+                    default:
+                        // No quotes widget, nowhere to show prices: the coins read as off (and stay locked) until it is back on.
+                        v[i] = onOff(Prefs.quotes() && Prefs.coin(id - R_COIN));
+                }
+            }
             return v;
         }
 
@@ -723,37 +783,46 @@ public class SettingsActivity extends Activity {
                 Prefs.setKeyApp(Prefs.KEYS[focus], appPkgs.get(next));
                 return;
             }
-            switch (focus) {
-                case 0: {
+            int id = rowId(focus);
+            switch (id) {
+                case R_LANGUAGE: {
                     int at = java.util.Arrays.asList(LANGUAGES).indexOf(Prefs.language());
                     Prefs.setLanguage(LANGUAGES[(at + dir + LANGUAGES.length) % LANGUAGES.length]);
                     break;
                 }
-                case 1: {
+                case R_TEMP: {
                     int at = java.util.Arrays.asList(UNITS).indexOf(Prefs.temperature());
                     Prefs.setTemperature(UNITS[(at + dir + UNITS.length) % UNITS.length]);
                     break;
                 }
-                case 2: {
+                case R_THEME: {
                     int at = java.util.Arrays.asList(THEMES).indexOf(Prefs.theme());
                     Prefs.setTheme(THEMES[(at + dir + THEMES.length) % THEMES.length]);
                     break;
                 }
-                case 3: Prefs.setWeather(!Prefs.weather()); break;
-                case 4: Prefs.setQuotes(!Prefs.quotes()); break;
-                case 5: askTmdbKey(); return;
-                case 6: Prefs.setTileSize(step(Prefs.TILE_SIZES, Prefs.tileSize(), dir)); break;
-                case 7: Prefs.setTileRadius(step(Prefs.TILE_RADII, Prefs.tileRadius(), dir)); break;
-                case 8: Prefs.setFocusStyle("grow".equals(Prefs.focusStyle()) ? "outline" : "grow"); break;
-                case 9: {
+                case R_WEATHER: Prefs.setWeather(!Prefs.weather()); break;
+                case R_QUOTES: Prefs.setQuotes(!Prefs.quotes()); break;
+                case R_TMDB: askTmdbKey(); return;
+                case R_DOCK: Prefs.setDockSize(step(Prefs.DOCK_SIZES, Prefs.dockSize(), dir)); break;
+                case R_ICON: Prefs.setTileSize(step(Prefs.TILE_SIZES, Prefs.tileSize(), dir)); break;
+                case R_RADIUS: Prefs.setTileRadius(step(Prefs.TILE_RADII, Prefs.tileRadius(), dir)); break;
+                case R_FOCUS: Prefs.setFocusStyle("grow".equals(Prefs.focusStyle()) ? "outline" : "grow"); break;
+                case R_GROW: Prefs.setGrowAmount(step(Prefs.GROW_AMOUNTS, Prefs.growAmount(), dir)); break;
+                case R_OPENING: {
                     String[] modes = {"quick", "off", "zoom"};
                     int at = Math.max(0, java.util.Arrays.asList(modes).indexOf(Prefs.launchAnim()));
                     Prefs.setLaunchAnim(modes[(at + dir + modes.length) % modes.length]);
                     break;
                 }
+                case R_TRAILERS: {
+                    String[] modes = {"sound", "muted", "off"};
+                    int at = Math.max(0, java.util.Arrays.asList(modes).indexOf(Prefs.trailers()));
+                    Prefs.setTrailers(modes[(at + dir + modes.length) % modes.length]);
+                    break;
+                }
                 default:
-                    if (!Prefs.quotes()) return;
-                    Prefs.setCoin(focus - COIN_ROWS, !Prefs.coin(focus - COIN_ROWS));
+                    if (id < R_COIN || !Prefs.quotes()) return;
+                    Prefs.setCoin(id - R_COIN, !Prefs.coin(id - R_COIN));
                     break;
             }
             HomeData.get(getContext()).settingsChanged();
@@ -936,7 +1005,7 @@ public class SettingsActivity extends Activity {
                 rowRect.set(LIST_X * k, y, LIST_R * k, y + rowH() * k);
                 float f = drawRowBackground(c, i);
                 rowLabel.setColor(blend(0xF2FFFFFF, INK, f));
-                boolean locked = !keys && i >= COIN_ROWS && !Prefs.quotes();
+                boolean locked = !keys && rowId(i) >= R_COIN && !Prefs.quotes();
                 rowValue.setColor(blend(locked ? 0x59FFFFFF : 0xB3FFFFFF, locked ? 0x591C1C1E : 0xB31C1C1E, f));
                 if (locked) rowLabel.setColor(blend(0x73FFFFFF, 0x731C1C1E, f));
                 float base = rowRect.centerY() + Ui.halfCap(rowLabel);

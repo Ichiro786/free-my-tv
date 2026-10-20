@@ -142,4 +142,36 @@ final class Prefs {
     /** How apps open: "quick" (a 170 ms fade-in), "zoom" (the system zoom out of the card) or "off". */
     static String launchAnim() { return sp().getString("launchAnim", "quick"); }
     static void setLaunchAnim(String v) { put("launchAnim", v); }
+
+    // MARK: - Dock, focus growth, trailers, pinned apps
+
+    /** Dock (glass shelf) size: 0 = automatic (hugs the cards), else percent of the original bar. */
+    static final int[] DOCK_SIZES = {0, 80, 85, 90, 95, 100, 105, 110};
+    static int dockSize() { return sp().getInt("dockSize", 0); }
+    static void setDockSize(int pct) { sp().edit().putInt("dockSize", pct).apply(); }
+    /** How much a focused card grows with the Grow effect: 0 = automatic, else percent. */
+    static final int[] GROW_AMOUNTS = {0, 6, 8, 10, 12, 14, 16, 18, 20, 25};
+    static int growAmount() { return sp().getInt("growAmount", 0); }
+    static void setGrowAmount(int pct) { sp().edit().putInt("growAmount", pct).apply(); }
+    /** Trailer previews on For You's big card: "sound", "muted" or "off". */
+    static String trailers() { return sp().getString("trailers", "sound"); }
+    static void setTrailers(String v) { put("trailers", v); }
+
+    /** Apps pinned from All Apps (long press OK): a row in the bottom drawer, in pin order. */
+    static List<String> pinned() {
+        List<String> out = new ArrayList<>();
+        for (String p : sp().getString("pinned", "").split(",")) if (!p.isEmpty()) out.add(p);
+        return out;
+    }
+
+    /** Pins the app (at the end) or unpins it; returns true if it is pinned now. */
+    static boolean togglePinned(String pkg) {
+        List<String> list = pinned();
+        boolean pin = !list.remove(pkg);
+        if (pin) list.add(pkg);
+        StringBuilder sb = new StringBuilder();
+        for (String p : list) sb.append(sb.length() == 0 ? "" : ",").append(p);
+        put("pinned", sb.toString());
+        return pin;
+    }
 }
