@@ -152,6 +152,27 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private final android.graphics.PorterDuffColorFilter whiteLogo =
             new android.graphics.PorterDuffColorFilter(0xFFFFFFFF, android.graphics.PorterDuff.Mode.SRC_IN);
     private final RectF platterRect = new RectF();
+    // Shelf look from Home Settings: card size (percent), corner radius (px at 1080p) and focus effect.
+    private float tileScale = 1, tileRadius = TILE_RADIUS, shelfPad = SHELF_PAD;
+    private boolean outlineFocus = true;
+    private final Paint outlinePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final android.graphics.Matrix outlineMatrix = new android.graphics.Matrix();
+
+    /** Reads the shelf look; true when it changed (the shelf then needs a new layout). */
+    private boolean readShelfLook() {
+        float scale = Prefs.tileSize() / 100f, radius = Prefs.tileRadius();
+        boolean outline = !"grow".equals(Prefs.focusStyle());
+        boolean changed = scale != tileScale || radius != tileRadius || outline != outlineFocus;
+        tileScale = scale;
+        tileRadius = radius;
+        outlineFocus = outline;
+        shelfPad = outline ? 24 : SHELF_PAD;   // no growth: the cards can sit closer to the glass edge
+        return changed;
+    }
+
+    private float grow() {
+        return outlineFocus ? 0 : FOCUS_GROW;
+    }
     private int shelfIndex;
 
     // Corner capsule
@@ -348,6 +369,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (tvInputs != null) tvInputs.registerCallback(inputCallback, handler);
         handler.postDelayed(tick, 15_000);
         checkNotices();
+        if (readShelfLook() && !shelf.isEmpty()) {
+            layoutShelf();
+            tilesDirty = true;
+            platter.invalidate();
+        }
         reload();
         updatePalette();
         updatePicks();
@@ -1014,13 +1040,17 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     }
 
     private void layoutShelf() {
+        readShelfLook();
         int n = shelf.size();
-        float pad = SHELF_PAD * k, gap = TILE_GAP * k, th = L_TILE_H * k;
+        float pad = shelfPad * k, gap = TILE_GAP * k;
+        // The glass bar keeps its bottom edge; bigger cards grow upward, never into the recommendation captions.
+        float bottom = (L_PLATTER_TOP + L_TILE_H + 2 * SHELF_PAD) * k, ceiling = 784 * k;
+        float th = Math.min(L_TILE_H * tileScale * k, bottom - ceiling - 2 * pad - (outlineFocus ? 0 : L_TILE_H * FOCUS_GROW * k / 2));
         float full = (CONTENT_R - MARGIN) * k;
-        float tw = Math.min(TILE_MAX_W * k, (full - Math.max(0, n - 1) * gap) / Math.max(1, n));
-        th = Math.min(th, tw * 9f / 16f);   // keep 16:9 so a banner is never squashed or cropped
+        float tw = Math.min(th * 16f / 9f, (full - Math.max(0, n - 1) * gap) / Math.max(1, n));
+        th = tw * 9f / 16f;   // 16:9 so a banner is never squashed or cropped
         float width = n * tw + Math.max(0, n - 1) * gap, left = (w - width) / 2f;
-        float top = L_PLATTER_TOP * k;
+        float top = bottom - th - 2 * pad;
         platterRect.set(left - pad, top, left + width + pad, top + th + 2 * pad);
         float x = left, y = top + pad;
         for (int i = 0; i < n; i++) {
@@ -1033,7 +1063,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     /** Shelf layer: the glass bar and its shadow (it only changes with the background). */
     private void drawPlatter(Canvas c) {
         if (shelf.isEmpty()) return;
-        float radius = (TILE_RADIUS + SHELF_PAD) * k;
+        float radius = (tileRadius + shelfPad) * k;
         tmp.set(platterRect);
         tmp.offset(0, 18 * k);
         shadow.setColor(tone(0x1F000000, 0x52000000));
@@ -1045,7 +1075,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     /** Coin logo + price in the configured currency, in a row at the right end of the tab bar. */
     private void drawQuotes(Canvas c) {
-        float right = platterRect.isEmpty() ? CONTENT_R * k : platterRect.right - SHELF_PAD * k;
+        float right = platterRect.isEmpty() ? CONTENT_R * k : platterRect.right - shelfPad * k;
         applyTone();
         Paint text = lQuote;
         // The corner buttons' names appear in this row: the quotes fade out while one of them has focus.
@@ -1106,9 +1136,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
      */
     private void drawShelfTile(Canvas c, int i) {
         HomeApps.Item it = shelf.get(i);
-        float f = tileFocus[i].value, fc = Ui.clamp(f), s = 1 + FOCUS_GROW * f;
+        float f = tileFocus[i].value, fc = Ui.clamp(f), s = 1 + grow() * f;
         RectF base = tileRects[i];
-        float bw = base.width(), bh = base.height(), r0 = TILE_RADIUS * k;
+        float bw = base.width(), bh = base.height(), r0 = Math.min(tileRadius * k, Math.min(base.width(), base.height()) / 2);
         float cx = base.centerX(), cy = base.centerY();
         cell.set(cx - bw * s / 2, cy - bh * s / 2, cx + bw * s / 2, cy + bh * s / 2);
         float r = r0 * s;
@@ -1154,6 +1184,27 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             } else if (it.tile != null) c.drawBitmap(it.tile, null, cell, bitmapPaint);
             c.restore();
         }
+        if (outlineFocus && fc > 0.01f) drawOutline(c, cell, r, fc);
+    }
+
+    /**
+     * Focus without growth: a ring just outside the card, with a bright highlight that sweeps once around it as the
+     * focus arrives (it rides the focus spring, so nothing animates at rest and the weak GPU stays idle).
+     */
+    private void drawOutline(Canvas c, RectF box, float r, float fc) {
+        float stroke = 4 * k, off = 3 * k + stroke / 2;
+        tmp.set(box.left - off, box.top - off, box.right + off, box.bottom + off);
+        int base = tone(0xD91D1D1F, 0xE6FFFFFF), shine = tone(0xFF0A84FF, 0xFFFFFFFF), dim = Ui.alpha(base, 0.55f);
+        android.graphics.SweepGradient g = new android.graphics.SweepGradient(tmp.centerX(), tmp.centerY(),
+                new int[] {dim, base, shine, base, dim}, new float[] {0f, 0.35f, 0.5f, 0.65f, 1f});
+        outlineMatrix.setRotate(-90 + 360 * fc, tmp.centerX(), tmp.centerY());
+        g.setLocalMatrix(outlineMatrix);
+        outlinePaint.setStyle(Paint.Style.STROKE);
+        outlinePaint.setStrokeWidth(stroke);
+        outlinePaint.setShader(g);
+        outlinePaint.setAlpha(Math.round(255 * fc));
+        c.drawRoundRect(tmp, r + off, r + off, outlinePaint);
+        outlinePaint.setShader(null);
     }
 
     private final android.graphics.Rect customSrc = new android.graphics.Rect();
@@ -1166,7 +1217,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private void drawLogo(Canvas c, HomeApps.Item it, RectF box, float s, int mode) {
         Bitmap logo = crispLogo(it, mode == 2 && it.logoDark != null);
         if (logo == null) return;
-        float scale = s / (1 + FOCUS_GROW);
+        float scale = s / (1 + grow());
         float dw = logo.getWidth() * scale, dh = logo.getHeight() * scale;
         float left = box.centerX() - dw / 2, top = box.centerY() - dh / 2;
         if (scale > 0.998f) {
@@ -1182,10 +1233,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private Bitmap crispLogo(HomeApps.Item it, boolean dark) {
         Bitmap src = dark ? it.logoDark : it.logo;
         if (tileRects.length == 0) return src;
-        String key = it.key + "@" + System.identityHashCode(src) + "@" + Math.round(tileRects[0].width());
+        String key = it.key + "@" + System.identityHashCode(src) + "@" + Math.round(tileRects[0].width()) + (outlineFocus ? "o" : "g");
         Bitmap cached = crispLogos.get(key);
         if (cached != null) return cached;
-        float bw = tileRects[0].width() * (1 + FOCUS_GROW), bh = tileRects[0].height() * (1 + FOCUS_GROW);
+        float bw = tileRects[0].width() * (1 + grow()), bh = tileRects[0].height() * (1 + grow());
         float lw = src.getWidth(), lh = src.getHeight();
         float scale = (float) Math.sqrt(bw * bh * 0.085f / (lw * lh * Math.max(0.08f, it.logoInk))) * it.logoScale;
         scale = Math.min(scale, Math.min(bw * 0.76f / lw, bh * 0.58f / lh));

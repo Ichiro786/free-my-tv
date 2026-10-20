@@ -402,7 +402,12 @@ final class HomeApps {
         if (intent == null) return false;
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         try {
-            a.startActivity(intent, ActivityOptions.makeScaleUpAnimation(from, x, y, Math.max(w, 1), Math.max(h, 1)).toBundle());
+            String anim = Prefs.launchAnim();
+            ActivityOptions opts = anim.equals("zoom")
+                    ? ActivityOptions.makeScaleUpAnimation(from, x, y, Math.max(w, 1), Math.max(h, 1))
+                    : anim.equals("off") ? ActivityOptions.makeCustomAnimation(a, 0, 0)
+                    : ActivityOptions.makeCustomAnimation(a, R.anim.launch_in, R.anim.launch_out);
+            a.startActivity(intent, opts.toBundle());
             return true;
         } catch (ActivityNotFoundException | SecurityException e) {
             AppLog.w("couldn't open " + it.label + ": " + e.getMessage());

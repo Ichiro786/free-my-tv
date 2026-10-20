@@ -127,4 +127,19 @@ final class Prefs {
     /** Package the key opens ("" = nothing). */
     static String keyApp(int keyCode) { return sp().getString("key" + keyCode, defaultApp(keyCode)); }
     static void setKeyApp(int keyCode, String pkg) { put("key" + keyCode, pkg); }
+
+    // MARK: - Shelf look (Home Settings): card size, corner radius, focus effect
+
+    static final int[] TILE_SIZES = {80, 90, 100, 110, 120, 130, 140};
+    static int tileSize() { return sp().getInt("tileSize", 100); }
+    static void setTileSize(int pct) { sp().edit().putInt("tileSize", pct).apply(); }
+    static final int[] TILE_RADII = {0, 4, 8, 12, 16, 20, 22, 26, 30, 36, 44, 56};
+    static int tileRadius() { return sp().getInt("tileRadius", 22); }
+    static void setTileRadius(int px) { sp().edit().putInt("tileRadius", px).apply(); }
+    /** "outline": the focused card keeps its size and gets a shimmering outline; "grow": it grows 20%. */
+    static String focusStyle() { return sp().getString("focusStyle", "outline"); }
+    static void setFocusStyle(String v) { put("focusStyle", v); }
+    /** How apps open: "quick" (a 170 ms fade-in), "zoom" (the system zoom out of the card) or "off". */
+    static String launchAnim() { return sp().getString("launchAnim", "quick"); }
+    static void setLaunchAnim(String v) { put("launchAnim", v); }
 }

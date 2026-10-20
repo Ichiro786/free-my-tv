@@ -112,6 +112,7 @@ public class SettingsActivity extends Activity {
     static final class SettingsView extends View implements Choreographer.FrameCallback {
         private static final int MAIN = 0, HOME_CHOICE = 1, HOME_SETTINGS = 2, REMOTE_KEYS = 3, PICKER = 4, SHELF_EDIT = 5;
         private static final float LIST_ROW_H = 68, LIST_ROW_GAP = 6;
+        private static final float SET_ROW_H = 54, SET_ROW_GAP = 4;   // Home Settings has more rows: a tighter list
         private static final int PICK_VISIBLE = 9;
         private static final float LIST_X = 1000, LIST_R = 1824, LIST_TOP = 186, ROW_H = 74, ROW_GAP = 8, CHOICE_H = 104;
         private static final int AMBER = 0xFFFFC266, INK = 0xFF1C1C1E;
@@ -119,7 +120,7 @@ public class SettingsActivity extends Activity {
         private final SettingsActivity activity;
         private final Scene scene = new Scene();
         private final Handler handler = new Handler(Looper.getMainLooper());
-        private final Spring[] pop = new Spring[12];
+        private final Spring[] pop = new Spring[16];
         private final List<String> appPkgs = new ArrayList<>(), appLabels = new ArrayList<>();
         // The list picker (the app of a remote button): what it shows, which one is in use, where we are.
         private final List<String> pickLabels = new ArrayList<>();
@@ -238,6 +239,9 @@ public class SettingsActivity extends Activity {
             }
         }
 
+        private float rowH() { return screen == HOME_SETTINGS ? SET_ROW_H : LIST_ROW_H; }
+        private float rowGap() { return screen == HOME_SETTINGS ? SET_ROW_GAP : LIST_ROW_GAP; }
+
         private RectF rowBox(int row) {
             float top, height;
             if (screen == MAIN) {
@@ -247,8 +251,8 @@ public class SettingsActivity extends Activity {
                 top = LIST_TOP + 20 + row * (CHOICE_H + ROW_GAP);
                 height = CHOICE_H;
             } else {
-                top = LIST_TOP + 20 + row * (LIST_ROW_H + LIST_ROW_GAP);
-                height = LIST_ROW_H;
+                top = LIST_TOP + 20 + row * (rowH() + rowGap());
+                height = rowH();
             }
             focusBox.set(LIST_X * k, top * k, LIST_R * k, (top + height) * k);
             return focusBox;
@@ -622,7 +626,7 @@ public class SettingsActivity extends Activity {
 
         private static final String[] LANGUAGES = {"auto", "pt", "en", "es"}, UNITS = {"auto", "C", "F"}, THEMES = {"auto", "light", "dark"};
         /** Home Settings: language, temperature, theme, weather, quotes, then one row per coin. */
-        private static final int COIN_ROWS = 6;
+        private static final int COIN_ROWS = 10;
 
         private boolean dollar() {
             return "BRL".equalsIgnoreCase(Config.CURRENCY.trim());
@@ -636,6 +640,10 @@ public class SettingsActivity extends Activity {
             l.add(Ui.tr("Widget do clima", "Weather widget"));
             l.add(Ui.tr("Widget de cotações", "Quotes widget"));
             l.add(Ui.tr("Chave do TMDB", "TMDB key"));
+            l.add(Ui.tr("Tamanho dos ícones", "App icon size"));
+            l.add(Ui.tr("Cantos dos ícones", "Icon corner radius"));
+            l.add(Ui.tr("Efeito de foco", "Focus effect"));
+            l.add(Ui.tr("Abrir apps", "App opening"));
             l.add("Bitcoin");
             l.add("Ethereum");
             l.add("Solana");
@@ -656,6 +664,11 @@ public class SettingsActivity extends Activity {
             v[4] = onOff(Prefs.quotes());
             String key = Prefs.tmdbKey();
             v[5] = key.isEmpty() ? Ui.tr("Nenhuma", "None") : "••••" + key.substring(Math.max(0, key.length() - 4));
+            v[6] = Prefs.tileSize() + "%";
+            v[7] = Prefs.tileRadius() == 0 ? Ui.tr("Retos", "Square") : Prefs.tileRadius() + " px";
+            v[8] = "grow".equals(Prefs.focusStyle()) ? Ui.tr("Aumentar", "Grow") : Ui.tr("Contorno brilhante", "Shimmer outline");
+            String la = Prefs.launchAnim();
+            v[9] = la.equals("zoom") ? Ui.tr("Zoom do sistema", "System zoom") : la.equals("off") ? Ui.tr("Instantâneo", "Instant") : Ui.tr("Rápido", "Quick fade");
             // No quotes widget, nowhere to show prices: the coins read as off (and stay locked) until it is back on.
             for (int i = COIN_ROWS; i < v.length; i++) v[i] = onOff(Prefs.quotes() && Prefs.coin(i - COIN_ROWS));
             return v;
@@ -729,12 +742,28 @@ public class SettingsActivity extends Activity {
                 case 3: Prefs.setWeather(!Prefs.weather()); break;
                 case 4: Prefs.setQuotes(!Prefs.quotes()); break;
                 case 5: askTmdbKey(); return;
+                case 6: Prefs.setTileSize(step(Prefs.TILE_SIZES, Prefs.tileSize(), dir)); break;
+                case 7: Prefs.setTileRadius(step(Prefs.TILE_RADII, Prefs.tileRadius(), dir)); break;
+                case 8: Prefs.setFocusStyle("grow".equals(Prefs.focusStyle()) ? "outline" : "grow"); break;
+                case 9: {
+                    String[] modes = {"quick", "off", "zoom"};
+                    int at = Math.max(0, java.util.Arrays.asList(modes).indexOf(Prefs.launchAnim()));
+                    Prefs.setLaunchAnim(modes[(at + dir + modes.length) % modes.length]);
+                    break;
+                }
                 default:
                     if (!Prefs.quotes()) return;
                     Prefs.setCoin(focus - COIN_ROWS, !Prefs.coin(focus - COIN_ROWS));
                     break;
             }
             HomeData.get(getContext()).settingsChanged();
+        }
+
+        /** The next value in a list (wraps around); a value not in the list starts from the nearest one. */
+        private static int step(int[] values, int current, int dir) {
+            int at = 0;
+            for (int i = 0; i < values.length; i++) if (Math.abs(values[i] - current) < Math.abs(values[at] - current)) at = i;
+            return values[(at + dir + values.length) % values.length];
         }
 
         /** A text box for the TMDB key (the phone's remote app keyboard can paste into it). Stays on the TV. */
@@ -903,8 +932,8 @@ public class SettingsActivity extends Activity {
             c.drawText(keys ? Ui.tr("Botões do Controle", "Remote Buttons") : Ui.tr("Ajustes do Início", "Home Settings"),
                     LIST_X * k + 30 * k, (LIST_TOP - 24) * k, heading);
             for (int i = 0; i < labels.length; i++) {
-                float y = (LIST_TOP + 20 + i * (LIST_ROW_H + LIST_ROW_GAP)) * k;
-                rowRect.set(LIST_X * k, y, LIST_R * k, y + LIST_ROW_H * k);
+                float y = (LIST_TOP + 20 + i * (rowH() + rowGap())) * k;
+                rowRect.set(LIST_X * k, y, LIST_R * k, y + rowH() * k);
                 float f = drawRowBackground(c, i);
                 rowLabel.setColor(blend(0xF2FFFFFF, INK, f));
                 boolean locked = !keys && i >= COIN_ROWS && !Prefs.quotes();
@@ -915,7 +944,7 @@ public class SettingsActivity extends Activity {
                 c.drawText(values[i], rowRect.right - 30 * k, base, rowValue);
             }
             Paint hint = Ui.text(Ui.regular, 23 * k, 0x8CFFFFFF);
-            float hy = (LIST_TOP + 20 + labels.length * (LIST_ROW_H + LIST_ROW_GAP) + 36) * k;
+            float hy = (LIST_TOP + 20 + labels.length * (rowH() + rowGap()) + 36) * k;
             c.drawText(Ui.tr("OK ou as setas mudam o valor.", "OK or the arrows change the value."), LIST_X * k + 30 * k, hy, hint);
             if (keys) {
                 c.drawText(RemoteKeys.supported() ? Ui.tr("Disney e Globoplay: a própria TV controla esses botões.",
