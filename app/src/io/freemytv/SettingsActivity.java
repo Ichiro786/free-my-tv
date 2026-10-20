@@ -426,7 +426,7 @@ public class SettingsActivity extends Activity {
             String line;
             String error = recs.optString("error");
             int count = recs.optInt("count");
-            if (!hasKey) line = Ui.tr("Sem chave do TMDB: veja o README (config.properties).", "No TMDB key: see the README (config.properties).");
+            if (!hasKey) line = Ui.tr("Sem chave do TMDB: adicione em Ajustes do Início → Chave do TMDB.", "No TMDB key: add it in Home Settings → TMDB key.");
             else if (!error.isEmpty()) line = Ui.tr("Erro: ", "Error: ") + error + ".";
             else if (count > 0) line = Ui.tr("Ligadas · " + count + " títulos nos apps da TV, 3 novos a cada hora.",
                     "On · " + count + " titles from the TV's apps, 3 new ones every hour.");
@@ -622,7 +622,7 @@ public class SettingsActivity extends Activity {
 
         private static final String[] LANGUAGES = {"auto", "pt", "en", "es"}, UNITS = {"auto", "C", "F"}, THEMES = {"auto", "light", "dark"};
         /** Home Settings: language, temperature, theme, weather, quotes, then one row per coin. */
-        private static final int COIN_ROWS = 5;
+        private static final int COIN_ROWS = 6;
 
         private boolean dollar() {
             return "BRL".equalsIgnoreCase(Config.CURRENCY.trim());
@@ -635,6 +635,7 @@ public class SettingsActivity extends Activity {
             l.add(Ui.tr("Tema", "Theme"));
             l.add(Ui.tr("Widget do clima", "Weather widget"));
             l.add(Ui.tr("Widget de cotações", "Quotes widget"));
+            l.add(Ui.tr("Chave do TMDB", "TMDB key"));
             l.add("Bitcoin");
             l.add("Ethereum");
             l.add("Solana");
@@ -653,6 +654,8 @@ public class SettingsActivity extends Activity {
             v[2] = theme.equals("light") ? Ui.tr("Claro", "Light") : theme.equals("dark") ? Ui.tr("Escuro", "Dark") : Ui.tr("Automático", "Automatic");
             v[3] = onOff(Prefs.weather());
             v[4] = onOff(Prefs.quotes());
+            String key = Prefs.tmdbKey();
+            v[5] = key.isEmpty() ? Ui.tr("Nenhuma", "None") : "••••" + key.substring(Math.max(0, key.length() - 4));
             // No quotes widget, nowhere to show prices: the coins read as off (and stay locked) until it is back on.
             for (int i = COIN_ROWS; i < v.length; i++) v[i] = onOff(Prefs.quotes() && Prefs.coin(i - COIN_ROWS));
             return v;
@@ -725,12 +728,40 @@ public class SettingsActivity extends Activity {
                 }
                 case 3: Prefs.setWeather(!Prefs.weather()); break;
                 case 4: Prefs.setQuotes(!Prefs.quotes()); break;
+                case 5: askTmdbKey(); return;
                 default:
                     if (!Prefs.quotes()) return;
                     Prefs.setCoin(focus - COIN_ROWS, !Prefs.coin(focus - COIN_ROWS));
                     break;
             }
             HomeData.get(getContext()).settingsChanged();
+        }
+
+        /** A text box for the TMDB key (the phone's remote app keyboard can paste into it). Stays on the TV. */
+        private void askTmdbKey() {
+            final android.widget.EditText box = new android.widget.EditText(getContext());
+            box.setSingleLine(true);
+            box.setHint(Ui.tr("Chave da API (v3)", "API key (v3)"));
+            box.setText(Prefs.tmdbKey());
+            box.setSelection(box.getText().length());
+            new android.app.AlertDialog.Builder(getContext())
+                    .setTitle(Ui.tr("Chave do TMDB", "TMDB key"))
+                    .setView(box)
+                    .setPositiveButton(Ui.tr("Salvar", "Save"), (d, w) -> {
+                        Prefs.setTmdbKey(box.getText().toString());
+                        hasKey = Recs.hasKey(getContext());
+                        HomeData.get(getContext()).settingsChanged();
+                        invalidate();
+                    })
+                    .setNeutralButton(Ui.tr("Apagar", "Clear"), (d, w) -> {
+                        Prefs.setTmdbKey("");
+                        hasKey = Recs.hasKey(getContext());
+                        HomeData.get(getContext()).settingsChanged();
+                        invalidate();
+                    })
+                    .setNegativeButton(Ui.tr("Cancelar", "Cancel"), null)
+                    .show();
+            box.requestFocus();
         }
 
         private boolean scrolling() {
