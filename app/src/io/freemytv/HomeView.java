@@ -660,6 +660,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         scrollWasMoving = scrollMoving;
         tilesDirty = statusDirty = heroDirty = drawerDirty = gridDirty = motionDirty = false;
         if (updateClock()) {
+            if (Prefs.clockWidget()) { heroLayer.invalidate(); drawerLayer.invalidate(); }
             layoutStatus();
             status.invalidate();
             if (hero != null && hero.clock) {
@@ -1190,6 +1191,120 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 tone(30, 34) * k, tone(22, 28) * k, tone(0.65f, 0.95f), 1);
     }
 
+    private Paint wDay, wDate, wTime, wAmPm, tBig, tAmPm, tDay, tDate;
+    private float wPaintsAt = -1;
+
+    private static final int ACCENT_LIGHT = 0xFFFF3B30, ACCENT_DARK = 0xFFFF453A;
+
+    private void widgetPaints(float s) {
+        if (wPaintsAt == s * k && wDay != null) return;
+        wPaintsAt = s * k;
+        wDay = Ui.text(Ui.semibold, 21 * k * s, ACCENT_LIGHT);
+        wDay.setLetterSpacing(0.06f);
+        wDate = Ui.text(Ui.medium, 23 * k * s, L_INK);
+        wTime = Ui.numbers(Ui.semibold, 27 * k * s, L_INK);
+        wAmPm = Ui.text(Ui.medium, 16 * k * s, L_DIM);
+        tBig = Ui.numbers(Ui.light, 104 * k * s, 0xFFFFFFFF);
+        tBig.setLetterSpacing(-0.02f);
+        tAmPm = Ui.text(Ui.medium, 26 * k * s, 0xADFFFFFF);
+        tDay = Ui.text(Ui.semibold, 23 * k * s, ACCENT_LIGHT);
+        tDay.setLetterSpacing(0.08f);
+        tDate = Ui.text(Ui.medium, 29 * k * s, 0xF2FFFFFF);
+    }
+
+    private static String fmt(String pattern, long now) {
+        return new java.text.SimpleDateFormat(pattern, Ui.locale()).format(new java.util.Date(now));
+    }
+
+    /**
+     * Two small glass chips at the right end of the tab row, where the crypto quotes were: the day and date
+     * ("WED  21 Oct", the day in the calendar red) and the time ("9:45 AM"). "Widget size" scales both together.
+     */
+    private void drawDateTime(Canvas c) {
+        float fade = 1;
+        for (int i = 3; i < 6; i++) fade = Math.min(fade, 1 - Ui.clamp(topFocus[i].value));
+        if (fade <= 0.01f) return;
+        float s = Prefs.widgetSize() / 100f;
+        widgetPaints(s);
+        long now = System.currentTimeMillis();
+        String day = fmt("EEE", now).replace(".", "").toUpperCase(Ui.locale());
+        String date = fmt(Ui.en ? "d MMM" : "d MMM", now).replace(".", "");
+        String time = Ui.clock(now);
+        String ampm = Ui.en ? fmt("a", now).toUpperCase(java.util.Locale.US) : "";
+        int accent = tone(ACCENT_LIGHT, ACCENT_DARK), ink = tone(L_INK, WHITE), dim = tone(L_DIM, 0xB3FFFFFF);
+        wDay.setColor(accent);
+        wDate.setColor(ink);
+        wTime.setColor(ink);
+        wAmPm.setColor(dim);
+
+        float h = 54 * k * s, pad = 24 * k * s, inner = 10 * k * s, gap = 12 * k * s;
+        float dateW = pad * 2 + wDay.measureText(day) + inner + wDate.measureText(date);
+        float timeW = pad * 2 + wTime.measureText(time) + (ampm.isEmpty() ? 0 : 6 * k * s + wAmPm.measureText(ampm));
+        float right = platterRect.isEmpty() ? CONTENT_R * k : platterRect.right - shelfPad * k;
+        float cy = (L_TABBAR_TOP + L_TABBAR_H / 2f) * k;
+        RectF timeR = new RectF(right - timeW, cy - h / 2, right, cy + h / 2);
+        RectF dateR = new RectF(timeR.left - gap - dateW, cy - h / 2, timeR.left - gap, cy + h / 2);
+
+        int save = fade < 0.99f ? c.saveLayerAlpha(dateR.left - 30 * k, dateR.top - 30 * k, right + 30 * k, dateR.bottom + 40 * k,
+                Math.round(255 * fade)) : -1;
+        for (RectF r : new RectF[] {dateR, timeR}) {
+            float rad = h / 2;
+            tmp.set(r);
+            tmp.offset(0, 6 * k * s);
+            shadow.setColor(Ui.alpha(0xFF000000, tone(0.10f, 0.30f)));
+            c.drawRoundRect(tmp, rad, rad, shadow);
+            scene.liquid(c, r, rad, tone(0xFFFFFFFF, SMOKE), tone(0.55f, 0.5f), tone(0.02f, 0.01f), 12 * k * s, 8 * k * s,
+                    tone(0.6f, 0.45f), 1);
+        }
+        float x = dateR.left + pad;
+        c.drawText(day, x, cy + Ui.halfCap(wDay), wDay);
+        x += wDay.measureText(day) + inner;
+        c.drawText(date, x, cy + Ui.halfCap(wDate), wDate);
+        x = timeR.left + pad;
+        c.drawText(time, x, cy + Ui.halfCap(wTime), wTime);
+        if (!ampm.isEmpty()) c.drawText(ampm, x + wTime.measureText(time) + 6 * k * s, cy + Ui.halfCap(wTime), wAmPm);
+        if (save >= 0) c.restoreToCount(save);
+    }
+
+    /** The drawer card where the crypto quotes were: a big clock with the day and the full date beside it. */
+    private void drawTodayCard(Canvas c, RectF r) {
+        drawerCard(c, r);
+        float s = Math.min(Prefs.widgetSize() / 100f, 1.15f);   // the card itself is fixed; the type grows inside it
+        widgetPaints(s);
+        long now = System.currentTimeMillis();
+        float x = r.left + 34 * k, right = r.right - 34 * k;
+        c.drawText(Ui.tr("Hoje", "Today"), x, r.top + 54 * k, cardTitle);
+        tBig.setColor(drawerInk(0.95f));
+        tAmPm.setColor(drawerInk(0.68f));
+        tDate.setColor(drawerInk(0.95f));
+        tDay.setColor(tone(ACCENT_LIGHT, ACCENT_DARK));
+        String time = Ui.clock(now);
+        String ampm = Ui.en ? fmt("a", now).toUpperCase(java.util.Locale.US) : "";
+        float timeBase = r.top + 182 * k;
+        c.drawText(time, x - Ui.leftBearing(tBig, time), timeBase, tBig);
+        if (!ampm.isEmpty()) c.drawText(ampm, x + tBig.measureText(time) + 10 * k, timeBase, tAmPm);
+        String day = fmt("EEEE", now);
+        day = day.isEmpty() ? day : day.substring(0, 1).toUpperCase(Ui.locale()) + day.substring(1);
+        c.drawText(day.toUpperCase(Ui.locale()), x, r.top + 234 * k, tDay);
+        String full = fmt(Ui.en ? "d MMMM yyyy" : "d 'de' MMMM 'de' yyyy", now);
+        c.drawText(full, x, r.top + 272 * k, tDate);
+        // A small calendar leaf at the right: month on top, the day's number big.
+        float leafW = 112 * k * s, leafH = 124 * k * s, top = r.top + 40 * k;
+        if (right - leafW > x + tBig.measureText(time) + 120 * k) {
+            RectF leaf = new RectF(right - leafW, top, right, top + leafH);
+            fill.setShader(null);
+            fill.setColor(Ui.alpha(tone(0xFFFFFFFF, 0xFFFFFFFF), tone(0.85f, 0.12f)));
+            c.drawRoundRect(leaf, 22 * k * s, 22 * k * s, fill);
+            String month = fmt("MMM", now).replace(".", "").toUpperCase(Ui.locale());
+            Paint m = Ui.text(Ui.semibold, 19 * k * s, tone(ACCENT_LIGHT, ACCENT_DARK));
+            m.setLetterSpacing(0.08f);
+            c.drawText(month, leaf.centerX() - m.measureText(month) / 2, leaf.top + 34 * k * s, m);
+            String dn = fmt("d", now);
+            Paint n = Ui.numbers(Ui.light, 62 * k * s, tone(L_INK, 0xFFFFFFFF));
+            c.drawText(dn, leaf.centerX() - n.measureText(dn) / 2, leaf.bottom - 22 * k * s, n);
+        }
+    }
+
     /** Coin logo + price in the configured currency, in a row at the right end of the tab bar. */
     private void drawQuotes(Canvas c) {
         float right = platterRect.isEmpty() ? CONTENT_R * k : platterRect.right - shelfPad * k;
@@ -1479,7 +1594,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             x += tw + gap;
         }
         float cardsTop = CARDS_TOP * k + pinShift(), split = left + (right - left) * 0.585f;
-        boolean wx = Prefs.weather(), qt = Prefs.quotes() && HomeData.active().length > 0;
+        boolean wx = Prefs.weather(), qt = Prefs.clockWidget();
         // A card that is off gives its room to the other one.
         weatherCard.set(left, cardsTop, qt ? split - 16 * k : right, cardsTop + CARDS_H * k);
         quotesCard.set(wx ? split + 16 * k : left, cardsTop, right, cardsTop + CARDS_H * k);
@@ -1562,7 +1677,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         for (int i = 0; i < drawerItems.size(); i++) if (i != top) drawDrawerTile(c, i);
         if (top >= 0) drawDrawerTile(c, top);
         if (Prefs.weather()) drawWeatherCard(c, weatherCard);
-        if (Prefs.quotes() && HomeData.active().length > 0) drawQuotesCard(c, quotesCard);
+        if (Prefs.clockWidget()) drawTodayCard(c, quotesCard);
     }
 
     /** The pinned apps: 16:9 cards like All Apps, the focused one lifted with its name under it. */
@@ -2614,7 +2729,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         for (int i = 0; i < 3; i++) if (cardFocus[i].value > 0.02f && (top < 0 || cardFocus[i].value > cardFocus[top].value)) top = i;
         for (int i = 0; i < 3; i++) if (i != top) drawLightCard(c, i);
         if (top >= 0) drawLightCard(c, top);
-        if (HomeData.coinCount() > 0) drawQuotes(c);
+        if (Prefs.clockWidget()) drawDateTime(c);
     }
 
     /**

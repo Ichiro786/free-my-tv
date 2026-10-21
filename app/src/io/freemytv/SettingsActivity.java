@@ -646,20 +646,18 @@ public class SettingsActivity extends Activity {
 
         // Home Settings rows by id (the list is built each time: "Grow amount" only shows with the Grow focus).
         private static final int R_LANGUAGE = 0, R_TEMP = 1, R_THEME = 2, R_WEATHER = 3, R_QUOTES = 4, R_TMDB = 5,
-                R_DOCK = 6, R_ICON = 7, R_RADIUS = 8, R_FOCUS = 9, R_GROW = 10, R_OPENING = 11, R_TRAILERS = 12, R_LIVE = 13, R_FORYOU = 14, R_HOMEHOLD = 15, R_COIN = 100;
+                R_DOCK = 6, R_ICON = 7, R_RADIUS = 8, R_FOCUS = 9, R_GROW = 10, R_OPENING = 11, R_TRAILERS = 12, R_LIVE = 13, R_FORYOU = 14, R_HOMEHOLD = 15, R_WSIZE = 16, R_COIN = 100;
 
         private List<Integer> settingRows() {
             List<Integer> r = new ArrayList<>();
-            for (int id : new int[] {R_LANGUAGE, R_TEMP, R_THEME, R_WEATHER, R_QUOTES, R_TMDB, R_DOCK, R_ICON, R_RADIUS, R_FOCUS}) r.add(id);
+            for (int id : new int[] {R_LANGUAGE, R_TEMP, R_THEME, R_WEATHER, R_QUOTES, R_WSIZE, R_TMDB, R_DOCK, R_ICON, R_RADIUS, R_FOCUS}) r.add(id);
             if (!"outline".equals(Prefs.focusStyle())) r.add(R_GROW);
             r.add(R_OPENING);
             r.add(R_TRAILERS);
             r.add(R_FORYOU);
             r.add(R_LIVE);
             r.add(R_HOMEHOLD);
-            int coins = dollar() ? 4 : 3;
-            for (int i = 0; i < coins; i++) r.add(R_COIN + i);
-            return r;
+            return r;   // the crypto coin rows are gone with the quotes
         }
 
         private int rowId(int index) {
@@ -677,7 +675,8 @@ public class SettingsActivity extends Activity {
                     case R_TEMP: l[i] = Ui.tr("Temperatura", "Temperature"); break;
                     case R_THEME: l[i] = Ui.tr("Tema", "Theme"); break;
                     case R_WEATHER: l[i] = Ui.tr("Widget do clima", "Weather widget"); break;
-                    case R_QUOTES: l[i] = Ui.tr("Widget de cotações", "Quotes widget"); break;
+                    case R_QUOTES: l[i] = Ui.tr("Widget de data e hora", "Date & time widget"); break;
+                    case R_WSIZE: l[i] = Ui.tr("Tamanho dos widgets", "Widget size"); break;
                     case R_TMDB: l[i] = Ui.tr("Chave do TMDB", "TMDB key"); break;
                     case R_DOCK: l[i] = Ui.tr("Tamanho da barra", "Dock size"); break;
                     case R_ICON: l[i] = Ui.tr("Tamanho dos ícones", "App icon size"); break;
@@ -720,7 +719,8 @@ public class SettingsActivity extends Activity {
                         break;
                     }
                     case R_WEATHER: v[i] = onOff(Prefs.weather()); break;
-                    case R_QUOTES: v[i] = onOff(Prefs.quotes()); break;
+                    case R_QUOTES: v[i] = onOff(Prefs.clockWidget()); break;
+                    case R_WSIZE: v[i] = Prefs.widgetSize() + "%"; break;
                     case R_TMDB: {
                         String key = Prefs.tmdbKey();
                         v[i] = key.isEmpty() ? Ui.tr("Nenhuma", "None") : "••••" + key.substring(Math.max(0, key.length() - 4));
@@ -830,7 +830,9 @@ public class SettingsActivity extends Activity {
                     break;
                 }
                 case R_WEATHER: Prefs.setWeather(!Prefs.weather()); break;
-                case R_QUOTES: Prefs.setQuotes(!Prefs.quotes()); break;
+                case R_QUOTES: Prefs.setClockWidget(!Prefs.clockWidget()); break;
+                case R_WSIZE: { int at = java.util.Arrays.binarySearch(Prefs.WIDGET_SIZES, Prefs.widgetSize()); if (at < 0) at = 3;
+                    Prefs.setWidgetSize(Prefs.WIDGET_SIZES[Math.max(0, Math.min(Prefs.WIDGET_SIZES.length - 1, at + dir))]); break; }
                 case R_TMDB: askTmdbKey(); return;
                 case R_DOCK: Prefs.setDockSize(step(Prefs.DOCK_SIZES, Prefs.dockSize(), dir)); break;
                 case R_ICON: Prefs.setTileSize(step(Prefs.TILE_SIZES, Prefs.tileSize(), dir)); break;
@@ -1054,6 +1056,25 @@ public class SettingsActivity extends Activity {
                 float base = rowRect.centerY() + Ui.halfCap(rowLabel);
                 c.drawText(labels[i], rowRect.left + 30 * k, base, rowLabel);
                 c.drawText(values[i], rowRect.right - 30 * k, base, rowValue);
+                if (!keys && rowId(i) == R_WSIZE) {
+                    // A slider: ← and → move the knob, all the widgets grow and shrink together.
+                    int[] sizes = Prefs.WIDGET_SIZES;
+                    float t = (Prefs.widgetSize() - sizes[0]) / (float) (sizes[sizes.length - 1] - sizes[0]);
+                    float tr = rowRect.right - 30 * k - rowValue.measureText("150%") - 28 * k, tl = tr - 300 * k, cy = rowRect.centerY();
+                    Paint track = new Paint(Paint.ANTI_ALIAS_FLAG);
+                    track.setStrokeCap(Paint.Cap.ROUND);
+                    track.setStrokeWidth(8 * k);
+                    track.setColor(blend(0x40FFFFFF, 0x331C1C1E, f));
+                    c.drawLine(tl, cy, tr, cy, track);
+                    track.setColor(blend(0xE6FFFFFF, 0xE61C1C1E, f));
+                    float kx = tl + (tr - tl) * t;
+                    c.drawLine(tl, cy, kx, cy, track);
+                    Paint knob = new Paint(Paint.ANTI_ALIAS_FLAG);
+                    knob.setColor(0x33000000);
+                    c.drawCircle(kx, cy + 2 * k, 16 * k, knob);
+                    knob.setColor(0xFFFFFFFF);
+                    c.drawCircle(kx, cy, 15 * k, knob);
+                }
             }
             Paint hint = Ui.text(Ui.regular, 23 * k, 0x8CFFFFFF);
             float hy = (LIST_TOP + 20 + (last - first) * (rowH() + rowGap()) + 36) * k;

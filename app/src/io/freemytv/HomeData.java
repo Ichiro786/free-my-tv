@@ -49,7 +49,7 @@ final class HomeData {
 
     /** BTC, ETH and SOL; in Brazilian reais also the dollar (USDT/BRL), which Binance doesn't list for most currencies. */
     static int coinCount() {
-        return Prefs.quotes() ? active().length : 0;
+        return 0;   // crypto quotes removed: the date and time widgets took their place
     }
 
     private static volatile int[] activeCoins;

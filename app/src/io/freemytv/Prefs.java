@@ -92,6 +92,15 @@ final class Prefs {
     static boolean quotes() { return sp().getBoolean("quotes", Config.SHOW_CRYPTO); }
     static void setQuotes(boolean on) { put("quotes", on); }
 
+    /** Date and time widgets where the crypto quotes used to be (the tab row and the drawer card). */
+    static boolean clockWidget() { return sp().getBoolean("clockWidget", true); }
+    static void setClockWidget(boolean on) { put("clockWidget", on); }
+
+    /** Size of the home widgets together, in percent. */
+    static final int[] WIDGET_SIZES = {70, 80, 90, 100, 110, 120, 130, 140, 150};
+    static int widgetSize() { return sp().getInt("widgetSize", 100); }
+    static void setWidgetSize(int pct) { sp().edit().putInt("widgetSize", pct).apply(); version++; }
+
     static boolean coin(int i) { return sp().getBoolean("coin" + i, true); }
     static void setCoin(int i, boolean on) { put("coin" + i, on); }
 
