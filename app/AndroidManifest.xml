@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="io.freemytv"
-    android:versionCode="2"
-    android:versionName="1.2.0">
+    android:versionCode="5"
+    android:versionName="1.2.3">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -11,6 +11,9 @@
     <!-- Settings > Shelf > hold OK: the pictures saved on the TV, for an app's own icon. -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <!-- Auto power-off: the warning's fallback overlay when the accessibility service isn't running. Granted over the
+         TV's own ADB (appops) when the feature is turned on in Free My TV mode; the accessibility overlay needs none. -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <!-- Android 11+: without this list the app can't "see" the other apps (getLeanbackLaunchIntentForPackage
          returns null). The shelf and streaming apps, the live TV apps and, through the <intent>, every TV app
@@ -49,8 +52,13 @@
     <uses-feature android:name="android.software.leanback" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
 
+    <!-- The default process is :home (the home screen, settings, screensaver and accessibility service). Android 11
+         starts a screensaver's window (DreamActivity) in the app's DEFAULT process, not the dream's: with the dream in
+         :home and the default being the main process, the window never came and the TV hung "dreaming" with nothing on
+         screen. The main process (the switches, the boot check) is now named explicitly below. -->
     <application
         android:name=".App"
+        android:process=":home"
         android:label="Free My TV"
         android:icon="@drawable/icon"
         android:banner="@drawable/banner"
@@ -136,6 +144,7 @@
         <!-- The switches, as background jobs in the main process. -->
         <service
             android:name=".ModeJob"
+            android:process="io.freemytv"
             android:exported="false"
             android:permission="android.permission.BIND_JOB_SERVICE" />
 
@@ -156,11 +165,31 @@
 
         <receiver
             android:name=".HomeReceiver"
+            android:process="io.freemytv"
             android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
+
+        <!-- Auto power-off's backup alarm (brings :home back if it was killed). -->
+        <receiver
+            android:name=".AutoOffReceiver"
+            android:process=":home"
+            android:exported="false" />
+
+        <!-- Auto power-off's warning, last resort (no accessibility service, no overlay permission). -->
+        <activity
+            android:name=".AutoOffActivity"
+            android:process=":home"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:launchMode="singleInstance"
+            android:taskAffinity="io.freemytv.autooff"
+            android:screenOrientation="landscape"
+            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize|screenLayout|smallestScreenSize|uiMode|density|fontScale|locale|layoutDirection"
+            android:theme="@style/FreeMyTV.Overlay" />
     </application>
 </manifest>

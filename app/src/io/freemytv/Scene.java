@@ -5,7 +5,9 @@ import android.graphics.BitmapShader;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.LinearGradient;
+import android.graphics.Matrix;
 import android.graphics.Paint;
+import android.graphics.RadialGradient;
 import android.graphics.RecordingCanvas;
 import android.graphics.RectF;
 import android.graphics.RenderNode;
@@ -19,6 +21,10 @@ import android.graphics.Shader;
  * background, its blurred version (setFrost).
  * If AGSL fails (it shouldn't on Android 13+), it falls back to a gradient and plain translucent glass: the home screen
  * is never left blank.
+ * Without AGSL (Android 11/12, the TCL) and with Aurora motion on, a light "fake aurora" stands in: a few soft color
+ * blobs from the palette drifting slowly over the dark gradient, painted on the CPU into a reused bitmap at 1/8 of the
+ * screen (only when advance moves it, so at most ~10 times per second) and scaled up with bilinear filtering, which
+ * blurs it into an aurora-like glow. Aurora motion off: the still gradient everywhere (Android 13+ included).
  */
 final class Scene {
     final Shaders.Palette palette = new Shaders.Palette();
@@ -30,6 +36,20 @@ final class Scene {
     private final Paint flatFill = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint flatRim = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint fallback = new Paint();
+    private final Paint dimPaint = new Paint();
+    // The fake aurora (Android < 13): blobs drawn into a small bitmap, all objects made once and reused.
+    private static final int BLOBS = 4;
+    private final RadialGradient[] blobShaders = new RadialGradient[BLOBS];
+    private final Paint blobPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.DITHER_FLAG);
+    private final Paint blobBase = new Paint(Paint.DITHER_FLAG);
+    private final Paint blobUp = new Paint(Paint.FILTER_BITMAP_FLAG | Paint.DITHER_FLAG);
+    private final Matrix blobMatrix = new Matrix();
+    private final RectF blobDst = new RectF();
+    private Bitmap blobBitmap;
+    private Canvas blobCanvas;
+    private LinearGradient blobGradient;
+    private int bw = 1, bh = 1;
+    private boolean motion = Prefs.auroraMotion(), blobsDirty = true;
     private final RenderNode auroraNode = new RenderNode("aurora");
     // The layer is drawn at a quarter size and scaled up: filtered, its soft shapes stay soft instead of stepping.
     private final Paint layerPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
@@ -65,6 +85,14 @@ final class Scene {
         h = Math.max(1, height);
         lw = Math.max(1, Math.round(w / 4f));
         lh = Math.max(1, Math.round(h / 4f));
+        int nbw = Math.max(1, Math.round(w / 8f)), nbh = Math.max(1, Math.round(h / 8f));
+        if (nbw != bw || nbh != bh) {
+            bw = nbw;
+            bh = nbh;
+            freeBlobs();
+            blobGradient = null;
+        }
+        blobDst.set(0, 0, w, h);
         auroraNode.setPosition(0, 0, lw, lh);
         if (aurora != null) {
             aurora.setFloatUniform("res", w, h);
@@ -82,14 +110,87 @@ final class Scene {
         push();
     }
 
+    /** Aurora motion (Settings → Themes): off draws the still gradient, also where AGSL is available. */
+    void setAuroraMotion(boolean on) {
+        if (on == motion) return;
+        motion = on;
+        blobsDirty = true;
+        auroraDirty = true;
+        if (!on) freeBlobs();
+    }
+
+    /** True while the background moves: the owner should keep calling advance (at ~10 per second) and redraw. */
+    boolean animating() {
+        return motion;
+    }
+
     /** Call after changing `palette`. Bright palettes are dimmed a little so white text stays readable. */
     void applyPalette() {
         push();
         fallback.setShader(new LinearGradient(0, 0, 0, h, palette.color(1), palette.color(0), Shader.TileMode.CLAMP));
+        // Fake aurora colors: the middle tone and the highlight, alternating, fading to transparent (made once here,
+        // moved every step with a local matrix: nothing is allocated per frame).
+        for (int i = 0; i < BLOBS; i++) {
+            int rgb = palette.color(i % 2 == 0 ? 2 : 1) & 0xFFFFFF;
+            int a = i % 2 == 0 ? 0xB3 : 0x8C;
+            blobShaders[i] = new RadialGradient(0, 0, 1, new int[] {(a << 24) | rgb, ((a / 3) << 24) | rgb, rgb},
+                    new float[] {0, 0.55f, 1}, Shader.TileMode.CLAMP);
+        }
+        blobGradient = null;
+        blobsDirty = true;
+    }
+
+    /** Frees the fake aurora's bitmap (low memory, or the screen went away); it is made again when needed. */
+    void trimMemory() {
+        freeBlobs();
+    }
+
+    private void freeBlobs() {
+        if (blobBitmap != null) blobBitmap.recycle();
+        blobBitmap = null;
+        blobCanvas = null;
+        blobsDirty = true;
+    }
+
+    /** Paints the fake aurora at `time` into the small bitmap (Android < 13). */
+    private void renderBlobs() {
+        if (blobBitmap == null) {
+            try {
+                blobBitmap = Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888);
+            } catch (OutOfMemoryError e) {
+                return;
+            }
+            blobCanvas = new Canvas(blobBitmap);
+        }
+        if (blobGradient == null) {
+            blobGradient = new LinearGradient(0, 0, 0, bh, palette.color(1), palette.color(0), Shader.TileMode.CLAMP);
+            blobBase.setShader(blobGradient);
+        }
+        Canvas c = blobCanvas;
+        c.drawRect(0, 0, bw, bh, blobBase);
+        // Slow drift: each blob loops on its own Lissajous path (periods of a few minutes at speed 1). The bands sit in
+        // the middle of the sky, like the AGSL aurora's: the top (clock) and the bottom (dock) stay darker.
+        float tt = time * 0.035f * speed;
+        for (int i = 0; i < BLOBS; i++) {
+            if (blobShaders[i] == null) continue;
+            float ph = i * 1.9f;
+            float cx = bw * (0.5f + 0.42f * (float) Math.sin(tt * (0.9f + 0.23f * i) + ph));
+            float cy = bh * (0.42f + 0.14f * (float) Math.sin(tt * (0.7f + 0.17f * i) + ph * 1.7f));
+            float rx = bw * (0.36f + 0.08f * (float) Math.sin(tt * 0.5f + ph * 2.3f));
+            float ry = rx * (0.45f + 0.1f * i / BLOBS);
+            blobMatrix.setScale(rx, ry);
+            blobMatrix.postTranslate(cx, cy);
+            blobShaders[i].setLocalMatrix(blobMatrix);
+            blobPaint.setShader(blobShaders[i]);
+            c.drawRect(Math.max(0, cx - rx), Math.max(0, cy - ry), Math.min(bw, cx + rx), Math.min(bh, cy + ry), blobPaint);
+        }
+        blobPaint.setShader(null);
+        blobsDirty = false;
     }
 
     private void push() {
         dim = Math.min(0.6f, baseDim + Math.max(0, Math.min(0.22f, (palette.brightest() - 0.45f) * 0.5f)));
+        dimPaint.setColor(Math.round(255 * dim) << 24);
         if (aurora == null) return;
         aurora.setFloatUniform("speed", speed);
         aurora.setFloatUniform("dim", dim);
@@ -99,6 +200,7 @@ final class Scene {
 
     /** Moves the aurora to `seconds`: redraws the layer on the next draw, recomputes the glass's frosted aurora now. */
     void advance(float seconds) {
+        if (seconds != time) blobsDirty = true;
         time = seconds;
         if (aurora == null) return;
         aurora.setFloatUniform("t", seconds);
@@ -218,9 +320,18 @@ final class Scene {
     }
 
     void drawBackground(Canvas c) {
-        if (aurora == null) {
+        if (aurora == null || !motion) {
             if (fallback.getShader() == null) applyPalette();
+            if (motion) {   // Android < 13: the fake aurora
+                if (blobsDirty || blobBitmap == null) renderBlobs();
+                if (blobBitmap != null) {
+                    c.drawBitmap(blobBitmap, null, blobDst, blobUp);
+                    if (dim > 0.004f) c.drawRect(0, 0, w, h, dimPaint);
+                    return;
+                }
+            }
             c.drawRect(0, 0, w, h, fallback);
+            if (dim > 0.004f) c.drawRect(0, 0, w, h, dimPaint);
             return;
         }
         if (auroraDirty) {

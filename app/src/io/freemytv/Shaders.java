@@ -337,6 +337,12 @@ final class Shaders {
         return ((c.get(java.util.Calendar.HOUR_OF_DAY) * 60L + c.get(java.util.Calendar.MINUTE)) * 60 + c.get(java.util.Calendar.SECOND)) * 1000L;
     }
 
+    /** The palette the Themes setting asks for: Dark = always the night palette; Sky = the sun's position (sky). */
+    static void background(Palette out, long now, long sunrise, long sunset) {
+        if ("sky".equals(Prefs.background())) sky(out, now, sunrise, sunset);
+        else dream(out);
+    }
+
     /** Screensaver: always the night palette, by day and by night. */
     static void dream(Palette out) {
         out.set(NIGHT[0], NIGHT[1], NIGHT[2]);

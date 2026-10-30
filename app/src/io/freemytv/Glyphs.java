@@ -21,7 +21,7 @@ import java.util.Map;
 final class Glyphs {
     private Glyphs() {}
 
-    private static final Map<String, Bitmap> BITMAPS = new HashMap<>();
+    private static final Map<String, Bitmap> BITMAPS = new Lru<>(32);   // bounded: least recently used out
     private static final Map<Integer, PorterDuffColorFilter> FILTERS = new HashMap<>();
     private static final Paint PAINT = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
 

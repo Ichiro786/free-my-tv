@@ -26,7 +26,7 @@ final class Symbols {
      * em, so an icon's em is drawn at ~1.2 × `pointSize`.
      */
     private static final float PX_PER_POINT = 96 * 1.5f;
-    private static final Map<String, Bitmap> CACHE = new HashMap<>();
+    private static final Map<String, Bitmap> CACHE = new Lru<>(96);   // bounded: least recently used out
     private static final Map<Integer, PorterDuffColorFilter> FILTERS = new HashMap<>();
     private static final Paint PAINT = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
     private static final RectF RECT = new RectF();

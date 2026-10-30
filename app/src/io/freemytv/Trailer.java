@@ -61,11 +61,23 @@ final class Trailer {
         return key;
     }
 
+    private static final java.util.regex.Pattern VIDEO_ID = java.util.regex.Pattern.compile("^[A-Za-z0-9_-]{11}$");
+
+    /** A YouTube video ID as YouTube makes them (11 of A–Z, a–z, 0–9, _ and -): only these go into the player page. */
+    static boolean validId(String id) {
+        return id != null && VIDEO_ID.matcher(id).matches();
+    }
+
     /** Starts the video (hidden until it plays) in `r` (screen pixels) with the card's corner radius. */
     @SuppressLint("SetJavaScriptEnabled")
     void play(String videoKey, RectF r, float cornerRadius, boolean muted) {
         if (broken || videoKey == null) return;
+        if (!validId(videoKey)) {   // never inject anything else into the page's HTML/JS: no trailer instead
+            AppLog.w("trailer: invalid video id, skipped");
+            return;
+        }
         if (videoKey.equals(key)) return;
+        main.removeCallbacks(idleRelease);
         if (web == null && !create()) return;
         key = videoKey;
         rect.set(r);
@@ -92,7 +104,13 @@ final class Trailer {
         host.trailerFailed(k);
     }
 
-    /** Fades out and stops (the WebView stays, blank, for the next one). */
+    private static final long IDLE_RELEASE_MS = 8_000;
+    private final Runnable idleRelease = () -> { if (key == null) release(); };
+
+    /**
+     * Fades out and stops. The WebView stays, blank, for a few seconds (moving between cards reuses it), then it's
+     * freed with its Chromium renderer, the biggest single user of memory on the TV.
+     */
     void stop() {
         main.removeCallbacks(giveUp);
         if (web == null || key == null) return;
@@ -104,12 +122,15 @@ final class Trailer {
             if (key != null || web != v) return;   // a new one started meanwhile
             v.setVisibility(View.INVISIBLE);
             v.loadUrl("about:blank");
+            main.removeCallbacks(idleRelease);
+            main.postDelayed(idleRelease, IDLE_RELEASE_MS);
         }).start();
     }
 
     /** The home screen went away: frees the WebView. */
     void release() {
         main.removeCallbacks(giveUp);
+        main.removeCallbacks(idleRelease);
         key = null;
         if (web == null) return;
         WebView v = web;

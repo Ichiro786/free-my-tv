@@ -47,12 +47,16 @@ final class Shimmer {
             R.set(box.left - off, box.top - off, box.right + off, box.bottom + off);
             PAINT.setStrokeWidth(stroke);
             Shader s = Build.VERSION.SDK_INT >= 33 && !agslFailed ? liquid(pass, focus, seconds) : null;
-            if (s == null) s = sweep(pass, focus, seconds);
+            if (s == null) {
+                s = sweep(pass, focus, seconds);   // sets the pass's alpha on the paint
+            } else {
+                PAINT.setAlpha(255);
+            }
             PAINT.setShader(s);
-            PAINT.setAlpha(255);
             c.drawRoundRect(R, radius + off, radius + off, PAINT);
         }
         PAINT.setShader(null);
+        PAINT.setAlpha(255);
     }
 
     @android.annotation.TargetApi(33)
@@ -75,14 +79,22 @@ final class Shimmer {
         }
     }
 
+    // Android 12 and older: one sweep built once (white, at the origin) and reused by all three passes every frame.
+    // The pass's strength rides the paint's alpha and the rotation and position ride the local matrix, so nothing is
+    // allocated on the UI thread while the rim spins (it used to be 3 new gradients per frame, ~90 a second on the TCL).
+    private static SweepGradient sweepShader;
+
     private static Shader sweep(int pass, float focus, float seconds) {
-        float a = ALPHA[pass] * focus;
-        int base = Ui.alpha(0xFFFFFFFF, 0.38f * a), peak = Ui.alpha(0xFFFFFFFF, a), mid = Ui.alpha(0xFFFFFFFF, 0.6f * a);
-        SweepGradient g = new SweepGradient(R.centerX(), R.centerY(),
-                new int[] {base, peak, base, mid, base, base},
-                new float[] {0f, 0.1f, 0.3f, 0.55f, 0.75f, 1f});
-        M.setRotate((seconds * 95f) % 360f, R.centerX(), R.centerY());
-        g.setLocalMatrix(M);
-        return g;
+        if (sweepShader == null) {
+            sweepShader = new SweepGradient(0, 0,
+                    new int[] {Ui.alpha(0xFFFFFFFF, 0.38f), 0xFFFFFFFF, Ui.alpha(0xFFFFFFFF, 0.38f), Ui.alpha(0xFFFFFFFF, 0.6f),
+                            Ui.alpha(0xFFFFFFFF, 0.38f), Ui.alpha(0xFFFFFFFF, 0.38f)},
+                    new float[] {0f, 0.1f, 0.3f, 0.55f, 0.75f, 1f});
+        }
+        M.setRotate((seconds * 95f) % 360f);
+        M.postTranslate(R.centerX(), R.centerY());
+        sweepShader.setLocalMatrix(M);
+        PAINT.setAlpha(Math.round(255 * Ui.clamp(ALPHA[pass] * focus)));
+        return sweepShader;
     }
 }

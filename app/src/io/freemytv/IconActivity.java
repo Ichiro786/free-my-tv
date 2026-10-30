@@ -248,7 +248,7 @@ public class IconActivity extends Activity {
         // Gallery
         private List<Uri> gallery;
         private int galleryTop;
-        private final Map<Uri, Bitmap> thumbs = new HashMap<>();
+        private final Map<Uri, Bitmap> thumbs = new Lru<>(60);   // bounded LRU: visible ones reload if dropped
         private final java.util.Set<Uri> loading = new java.util.HashSet<>();
 
         // Crop: the picture, the crop box (picture pixels, 16:9), the chip in focus, and whether the arrows adjust
@@ -533,7 +533,6 @@ public class IconActivity extends Activity {
                 final Bitmap res = t;
                 main.post(() -> {
                     if (res != null) {
-                        if (thumbs.size() > 60) thumbs.clear();   // keep memory low; visible ones reload
                         thumbs.put(u, res);
                     }
                     loading.remove(u);

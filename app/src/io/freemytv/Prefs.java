@@ -78,6 +78,21 @@ final class Prefs {
 
     static void setTheme(String v) { put("theme", v); }
 
+    // MARK: - Themes (Settings → Themes)
+
+    /** Background palette: "dark" (always the night sky, easy on the eyes; the default) or "sky" (follows the sun). */
+    static String background() {
+        String v = sp().getString("background", "dark");
+        return v.equals("sky") ? "sky" : "dark";
+    }
+
+    static void setBackground(String v) { put("background", v); }
+
+    /** The moving aurora background (on by default). Off: a still gradient in the same colors. */
+    static boolean auroraMotion() { return sp().getBoolean("auroraMotion", true); }
+
+    static void setAuroraMotion(boolean on) { put("auroraMotion", on); }
+
     // MARK: - City (from config.properties)
 
     static String city() { return Config.CITY.trim(); }
@@ -193,4 +208,17 @@ final class Prefs {
     /** Holding the remote's Home button opens Free My TV's settings. */
     static boolean homeHold() { return sp().getBoolean("homeHold", true); }
     static void setHomeHold(boolean v) { sp().edit().putBoolean("homeHold", v).apply(); }
+
+    // MARK: - Auto power-off (Home Settings). Saved without bumping `version`: the home screen needn't redraw.
+
+    static final int AUTO_OFF_MIN = 1, AUTO_OFF_MAX = 24, AUTO_OFF_DEFAULT = 4;
+    static boolean autoOff() { return sp().getBoolean("autoOff", false); }
+    static void setAutoOff(boolean on) { sp().edit().putBoolean("autoOff", on).apply(); }
+    /** Hours of continuous on-time before the 20-second warning. */
+    static int autoOffHours() {
+        return Math.max(AUTO_OFF_MIN, Math.min(AUTO_OFF_MAX, sp().getInt("autoOffHours", AUTO_OFF_DEFAULT)));
+    }
+    static void setAutoOffHours(int h) {
+        sp().edit().putInt("autoOffHours", Math.max(AUTO_OFF_MIN, Math.min(AUTO_OFF_MAX, h))).apply();
+    }
 }

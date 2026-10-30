@@ -66,6 +66,15 @@ final class Adb implements Closeable {
 
     /** Connects and authenticates. If the TV doesn't know our key yet, waits up to `approvalMs` for you to accept. */
     static Adb connect(Context c, int approvalMs, Approval approval) throws IOException {
+        return connect(c, approvalMs, approval, true);
+    }
+
+    /** Only if the TV already trusts our key: never puts "Allow USB debugging?" on screen (Auto power-off). */
+    static Adb connectTrusted(Context c) throws IOException {
+        return connect(c, 0, null, false);
+    }
+
+    private static Adb connect(Context c, int approvalMs, Approval approval, boolean offer) throws IOException {
         KeyPair keys = keys(c);
         Socket s = new Socket();
         try {
@@ -95,6 +104,8 @@ final class Adb implements Closeable {
                 if (!signed) {
                     adb.send(AUTH, AUTH_SIGNATURE, 0, sign(keys.getPrivate(), m.data));
                     signed = true;
+                } else if (!offeredKey && !offer) {
+                    throw new IOException("the TV doesn't trust the app's key yet");
                 } else if (!offeredKey) {
                     // Unknown key: send the public one; the TV shows "Allow USB debugging?".
                     adb.send(AUTH, AUTH_RSAPUBLICKEY, 0, publicKeyBlob(keys.getPublic()));

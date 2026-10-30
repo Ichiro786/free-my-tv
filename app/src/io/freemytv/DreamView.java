@@ -109,6 +109,7 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
     private final Paint black = new Paint();
     private final Paint shadowPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
     private final Paint glassPaint = new Paint();
+    private final Rect clockInk = new Rect();
     private final Set<String> failed = new HashSet<>();     // Recs.key: a movie and a series can have the same ID
     private RuntimeShader glassShader;
     private boolean running, dirty = true, chromeDirty = true;
@@ -164,6 +165,7 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
         if (running) return;
         running = true;
         if (worker.isShutdown()) worker = Executors.newSingleThreadExecutor();
+        scene.setAuroraMotion(Prefs.auroraMotion());   // Settings → Themes (the palette stays the night one)
         startedAt = clock();
         lastFrame = 0;
         failed.clear();
@@ -186,6 +188,7 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
         decoding = false;
         Choreographer.getInstance().removeFrameCallback(this);
         handler.removeCallbacks(tick);
+        scene.trimMemory();
         data.removeListener(this);
         recs.removeListener(this);
         // The photos stay in GPU memory until the garbage collector runs: release them now (after the last frame).
@@ -395,13 +398,20 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
     // Motion is slow (under half a pixel per frame). Measured on the TV: ~4 ms of GPU per frame of ours, but drawing
     // every frame, it only reaches ~50 fps (the system also composites the UI on the GPU); at 20 there's room to spare.
 
+    // The screensaver always moves (the photos' slow zoom, or the drifting clock), so it keeps its 20 frames per second,
+    // but it no longer wakes on every display frame just to skip two of three: it asks for the frame it will draw.
     @Override public void doFrame(long frameTimeNanos) {
         if (!running) return;
         if (frameTimeNanos - lastFrame >= 45_000_000L) {
             lastFrame = frameTimeNanos;
             invalidate();
         }
-        Choreographer.getInstance().postFrameCallback(this);
+        Choreographer.getInstance().postFrameCallbackDelayed(this, 34);
+    }
+
+    /** Low memory: frees the fake aurora's bitmap (Android < 13); it is made again on the next aurora frame. */
+    void trimMemory() {
+        scene.trimMemory();
     }
 
     /** The clock that drives the animations. */
@@ -523,9 +533,8 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
                 shadowPaint.setAlpha(140);
                 c.drawBitmap(g.shadow, g.x, g.y + 6 * k, shadowPaint);
             } else {
-                Rect ink = new Rect();
-                cornerClock.getTextBounds(clock, 0, clock.length(), ink);
-                c.drawText(clock, right - ink.right, CLOCK_TOP * k - ink.top, cornerClock);
+                cornerClock.getTextBounds(clock, 0, clock.length(), clockInk);
+                c.drawText(clock, right - clockInk.right, CLOCK_TOP * k - clockInk.top, cornerClock);
             }
 
             // Compact prices under the clock, right-aligned.

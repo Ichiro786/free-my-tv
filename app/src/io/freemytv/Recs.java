@@ -53,7 +53,11 @@ final class Recs {
     interface Listener { void onRecs(); }
 
     private static final String API = "https://api.themoviedb.org/3";
-    private static final String IMAGES = "https://image.tmdb.org/t/p/original";
+    // 1280 wide, not the original (often 4K): the home screen shows backdrops blurred, and a 4K file cost RAM and data
+    // for nothing. Decoding still sizes them down to the screen (inSampleSize).
+    private static final String IMAGES = "https://image.tmdb.org/t/p/w1280";
+    /** Backdrops on disk. A new folder since 1.2.2 (files are named by TMDB path, so old 4K files would be reused). */
+    private static final String IMAGE_DIR = "recs2", OLD_IMAGE_DIR = "recs";
     private static final long LIST_EVERY = 6 * 3600_000L;
     /** Bump when what is saved for each title changes (the saved list is discarded and fetched again). */
     private static final int CACHE_VERSION = 6;
@@ -100,9 +104,10 @@ final class Recs {
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
     private final List<Listener> listeners = new ArrayList<>();
-    private final Map<String, Backdrop> images = new LinkedHashMap<>();   // this hour's, built and ready to draw
+    // Bounded LRU (access order): the loaders below drop the least recently used past their limit.
+    private final Map<String, Backdrop> images = new LinkedHashMap<>(16, 0.75f, true);   // this hour's, ready to draw
     private final java.util.Set<String> pending = new java.util.HashSet<>();
-    private final Map<String, Bitmap> posters = new LinkedHashMap<>();    // the tall cards' posters, ready to draw
+    private final Map<String, Bitmap> posters = new LinkedHashMap<>(16, 0.75f, true);    // the tall cards' posters
     private final java.util.Set<String> posterPending = new java.util.HashSet<>();
     private static final String POSTERS = "https://image.tmdb.org/t/p/w780";
     private volatile List<Pick> picks = new ArrayList<>();
@@ -117,6 +122,17 @@ final class Recs {
     private Recs(Context c) {
         context = c;
         cache = c.getSharedPreferences("recs", Context.MODE_PRIVATE);
+        // Once: the old backdrop folder (full-size originals, up to 4K) goes; the new one fills with 1280-wide files.
+        final File old = new File(c.getCacheDir(), OLD_IMAGE_DIR);
+        if (old.isDirectory()) {
+            io.execute(() -> {
+                File[] files = old.listFiles();
+                if (files != null) for (File f : files) //noinspection ResultOfMethodCallIgnored
+                    f.delete();
+                //noinspection ResultOfMethodCallIgnored
+                old.delete();
+            });
+        }
         if (cache.getInt("version", 0) != CACHE_VERSION) cache.edit().clear().putInt("version", CACHE_VERSION).apply();
         try {
             String saved = cache.getString("picks", null);
@@ -276,6 +292,33 @@ final class Recs {
         return null;
     }
 
+    /**
+     * The poster decoded straight to the size the tall card draws it (it's center-cropped to 336 × 464 in the
+     * 1920-wide layout, 8% more while focused), instead of the full 780-wide original: less RAM per poster on the TCL.
+     */
+    private Bitmap decodePoster(File f) {
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        bounds.inJustDecodeBounds = true;
+        BitmapFactory.decodeFile(f.getPath(), bounds);
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null;
+        android.util.DisplayMetrics dm = context.getResources().getDisplayMetrics();
+        float k = Math.max(dm.widthPixels, dm.heightPixels) / 1920f * 1.08f;
+        float scale = Math.max(Backdrop.TALL_W * k / bounds.outWidth, Backdrop.TALL_H * k / bounds.outHeight);
+        BitmapFactory.Options opts = new BitmapFactory.Options();
+        if (scale < 1) {
+            int target = Math.max(1, (int) Math.ceil(bounds.outHeight * scale));
+            opts.inSampleSize = 1;
+            while (bounds.outHeight / (opts.inSampleSize * 2) >= target) opts.inSampleSize *= 2;
+            int sampled = bounds.outHeight / opts.inSampleSize;
+            if (sampled > target) {   // the rest of the way while decoding (no full-size copy in between)
+                opts.inScaled = true;
+                opts.inDensity = sampled;
+                opts.inTargetDensity = target;
+            }
+        }
+        return BitmapFactory.decodeFile(f.getPath(), opts);
+    }
+
     private void loadPoster(String key) {
         File dir = new File(context.getCacheDir(), "posters");
         File f = new File(dir, key.replace("/", ""));
@@ -297,7 +340,7 @@ final class Recs {
                 if (!part.renameTo(f)) throw new IOException("couldn't save the poster");
                 prune(dir);
             }
-            Bitmap b = BitmapFactory.decodeFile(f.getPath());
+            Bitmap b = decodePoster(f);
             if (b == null) throw new IOException("unreadable poster");
             Bitmap g = Backdrop.gpu(b);
             synchronized (posters) {
@@ -317,7 +360,7 @@ final class Recs {
     }
 
     private File imageFile(Pick p) {
-        return new File(new File(context.getCacheDir(), "recs"), p.backdrop.replace("/", ""));
+        return new File(new File(context.getCacheDir(), IMAGE_DIR), p.backdrop.replace("/", ""));
     }
 
     /** With a key: fetches the list if stale or the time of day (morning/afternoon/night) changed; then the details. */
@@ -366,6 +409,18 @@ final class Recs {
                 notifyListeners();
             }
         });
+    }
+
+    /** Low memory: keeps only the images of `keep` (the cards on screen) and drops the rest (rebuilt from disk). */
+    void trimMemory(java.util.Collection<Pick> keep) {
+        java.util.Set<String> b = new java.util.HashSet<>(), q = new java.util.HashSet<>();
+        for (Pick p : keep) {
+            if (p == null) continue;
+            if (p.backdrop != null) b.add(p.backdrop);
+            if (p.poster != null) q.add(p.poster);
+        }
+        synchronized (images) { images.keySet().retainAll(b); }
+        synchronized (posters) { posters.keySet().retainAll(q); }
     }
 
     /** Home screen design: the ready images are rebuilt for it (the light design uses cards, not the whole photo). */
@@ -599,7 +654,7 @@ final class Recs {
         double bestScore = -1;
         for (int i = 0; list != null && i < list.length(); i++) {
             JSONObject v = list.optJSONObject(i);
-            if (v == null || !"YouTube".equalsIgnoreCase(v.optString("site")) || v.optString("key", "").isEmpty()) continue;
+            if (v == null || !"YouTube".equalsIgnoreCase(v.optString("site")) || !Trailer.validId(v.optString("key", ""))) continue;
             String type = v.optString("type");
             double score = ("Trailer".equals(type) ? 4e6 : "Teaser".equals(type) ? 3e6 : "Clip".equals(type) ? 1e6 : 0)
                     + (v.optBoolean("official") ? 5e5 : 0)
@@ -721,7 +776,7 @@ final class Recs {
         prune(f.getParentFile());
     }
 
-    /** Reads the original (≥ 1920 wide) and builds the backdrop (Backdrop: cards plus frosted and glass versions). */
+    /** Reads the downloaded image (1280 wide since 1.2.2) and builds the backdrop (Backdrop: cards plus frosted and glass versions). */
     private void loadImage(Pick p) {
         synchronized (images) {
             if (images.containsKey(p.backdrop)) return;
@@ -796,7 +851,7 @@ final class Recs {
             p.app = o.optString("app").isEmpty() ? null : o.optString("app");
             p.pkg = o.optString("pkg").isEmpty() ? null : o.optString("pkg");
             p.detailed = o.optBoolean("detailed");
-            p.trailer = o.optString("trailer").isEmpty() ? null : o.optString("trailer");
+            p.trailer = Trailer.validId(o.optString("trailer")) ? o.optString("trailer") : null;
             p.imdb = o.optString("imdb").isEmpty() ? null : o.optString("imdb");
             p.poster = o.optString("poster").isEmpty() ? null : o.optString("poster");
             out.add(p);

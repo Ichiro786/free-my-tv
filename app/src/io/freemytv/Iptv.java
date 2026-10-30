@@ -422,9 +422,42 @@ final class Iptv {
         return -1;
     }
 
+    /**
+     * True for a link to this TV itself (localhost, 127.x.x.x, ::1, 0.0.0.0): playlists and guides must come from
+     * the network, never from a service on the TV (its ADB port among them). An unreadable link counts as local.
+     */
+    static boolean isLocal(String url) {
+        if (url == null) return false;
+        String u = url.trim();
+        if (u.isEmpty()) return false;
+        if (!u.matches("(?i)^[a-z][a-z0-9+.-]*://.*")) u = "http://" + u;
+        String host;
+        try {
+            host = new URL(u).getHost();
+        } catch (IOException e) {
+            return true;
+        }
+        if (host == null) return true;
+        host = host.toLowerCase(Locale.ROOT);
+        while (host.endsWith(".")) host = host.substring(0, host.length() - 1);
+        if (host.startsWith("[") && host.endsWith("]")) host = host.substring(1, host.length() - 1);
+        if (host.isEmpty()) return true;
+        if (host.equals("localhost") || host.endsWith(".localhost")) return true;
+        if (host.equals("0.0.0.0") || host.equals("0") || host.matches("^127(\\.\\d{1,3}){0,3}$")) return true;
+        if (host.equals("::1") || host.equals("::") || host.matches("^(0{1,4}:){7}0{0,3}1$") || host.matches("^(0{1,4}:){7}0{1,4}$")) return true;
+        return host.startsWith("::ffff:127.") || host.equals("::ffff:0.0.0.0");
+    }
+
+    /** The friendly message for a local link. */
+    static String localError() {
+        return Ui.tr("Esse link aponta para a própria TV (localhost/127.0.0.1). Use o link da lista na internet ou na sua rede.",
+                "That link points to the TV itself (localhost/127.0.0.1). Use the playlist's internet or home-network link.");
+    }
+
     static HttpURLConnection open(String url, String ua, String referrer) throws IOException {
         String u = url;
         for (int hop = 0; hop < 6; hop++) {
+            if (isLocal(u)) throw new IOException(localError());   // also after a redirect
             HttpURLConnection c = (HttpURLConnection) new URL(u).openConnection();
             c.setConnectTimeout(15000);
             c.setReadTimeout(60000);

@@ -90,6 +90,16 @@ final class Spanish {
             case "Automatic": return "Automático";
             case "Light": return "Claro";
             case "Dark": return "Oscuro";
+            case "Themes": return "Temas";
+            case "Background": return "Fondo";
+            case "Sky": return "Cielo";
+            case "Aurora motion": return "Movimiento de la aurora";
+            case "Dark: the night sky all day, easier on the eyes. Sky: follows the sun.":
+                return "Oscuro: el cielo nocturno todo el día, más cómodo para la vista. Cielo: sigue al sol.";
+            case "With motion off, the background stays still and the TV does less work.":
+                return "Sin movimiento, el fondo queda quieto y el TV trabaja menos.";
+            case "That link points to the TV itself (localhost/127.0.0.1). Use the playlist's internet or home-network link.":
+                return "Ese enlace apunta al propio TV (localhost/127.0.0.1). Usa el enlace de la lista en internet o en tu red.";
             case "Weather widget": return "Widget del clima";
             case "Quotes widget": return "Widget de cotizaciones";
             case "On": return "Activado";

@@ -743,6 +743,10 @@ public class IptvActivity extends Activity implements Player.Listener {
                     String u = url.getText().toString().trim();
                     if (u.isEmpty()) return;
                     if (!u.matches("(?i)^[a-z]+://.*")) u = "http://" + u;
+                    if (Iptv.isLocal(u) || Iptv.isLocal(epg.getText().toString())) {
+                        toast(Iptv.localError());
+                        return;
+                    }
                     switchTo(Iptv.add(this, name.getText().toString(), u, epg.getText().toString()), true);
                 })
                 .setNegativeButton(Ui.tr("Cancelar", "Cancel"), null).show();
@@ -760,6 +764,10 @@ public class IptvActivity extends Activity implements Player.Listener {
                 .setView(wrap(server, user, pass, name))
                 .setPositiveButton(Ui.tr("Adicionar", "Add"), (d, w) -> {
                     if (server.getText().toString().trim().isEmpty() || user.getText().toString().trim().isEmpty()) return;
+                    if (Iptv.isLocal(server.getText().toString())) {
+                        toast(Iptv.localError());
+                        return;
+                    }
                     switchTo(Iptv.addXtream(this, name.getText().toString(), server.getText().toString(),
                             user.getText().toString(), pass.getText().toString()), true);
                 })

@@ -262,6 +262,8 @@ final class HomeData {
         String theme = Prefs.theme();
         if (theme.equals("dark")) return true;
         if (theme.equals("light")) return false;
+        // Automatic follows the background: the Dark background is the night sky all day, so the UI is dark too.
+        if (Prefs.background().equals("dark")) return true;
         long t = Shaders.timeOfDay(now, 0);
         long rise = Shaders.timeOfDay(weather.sunrise, 6 * 60 * 60_000L);
         long set = Shaders.timeOfDay(weather.sunset, 18 * 60 * 60_000L);

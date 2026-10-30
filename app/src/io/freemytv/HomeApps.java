@@ -105,8 +105,8 @@ final class HomeApps {
             "com.tcl.guard",                        // TCL: Safety Guard
             "com.tcl.exhibit"));                    // TCL: T-Exhibition
 
-    private static final Map<String, Bitmap> TILES = new HashMap<>();   // key → ready card
-    private static final Map<String, Bitmap> LOGOS = new HashMap<>();   // key → colored logo with no background
+    private static final Map<String, Bitmap> TILES = new Lru<>(160);   // key → ready card (bounded LRU; above any TV's app count)
+    private static final Map<String, Bitmap> LOGOS = new Lru<>(160);   // key → colored logo with no background (bounded LRU)
 
     /**
      * Home screen apps. `extract`: also lifts the logos that are not on disk yet (slow: background only); without it,

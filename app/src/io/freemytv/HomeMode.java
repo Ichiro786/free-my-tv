@@ -117,6 +117,28 @@ final class HomeMode {
         }
     }
 
+    /**
+     * Auto power-off was turned on: its warning is drawn by the accessibility service (made sure it's on) and, as a
+     * fallback, as an overlay (our own SYSTEM_ALERT_WINDOW, granted through the TV's ADB, which Free My TV mode
+     * already trusts). Only in Free My TV mode, so it never brings up "Allow USB debugging?" on its own.
+     */
+    static void requestAutoOffSetup(Context c) {
+        ModeJob.schedule(c, ModeJob.AUTO_OFF, null, 0);
+    }
+
+    static void autoOffSetupNow(Context app) {
+        if (!FREE.equals(state(app).optString("mode"))) return;
+        try (Adb adb = Adb.connect(app, 10_000, null)) {
+            remoteService(app, adb, true);
+            if (!android.provider.Settings.canDrawOverlays(app)) {
+                adb.shell("appops set " + PKG + " SYSTEM_ALERT_WINDOW allow");
+                AppLog.w("auto power-off: overlay permission granted");
+            }
+        } catch (IOException e) {
+            AppLog.w("auto power-off setup: " + e.getMessage());
+        }
+    }
+
     private static final String REMOTE_SERVICE = PKG + "/" + PKG + ".RemoteKeyService";
     private static final Pattern SERVICE = Pattern.compile("[\\w.]+/[\\w.$]+");
 
